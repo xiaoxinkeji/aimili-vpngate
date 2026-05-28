@@ -2669,12 +2669,12 @@ function startConnectionPolling() {
         try {
           await fetch("./api/test_proxy", { method: "POST" });
         } catch(pe){}
-        location.reload();
+        load();
       }
     } catch(pe) {
       clearInterval(pollInterval);
       pollInterval = null;
-      location.reload();
+      load();
     }
   }, 1000);
 }
@@ -2725,7 +2725,7 @@ async function disconnectNode(){
       try {
         await fetch("./api/test_proxy", { method: "POST" });
       } catch(pe){}
-      location.reload();
+      load();
     } else {
       alert("断开连接失败: " + (result.error || "未知错误"));
     }
