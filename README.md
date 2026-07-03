@@ -1,5 +1,8 @@
 # AimiliVPN 🌐
 
+[![Docker Image](https://img.shields.io/badge/ghcr.io-xiaoxinkeji%2Faimili--vpngate-blue?logo=docker)](https://github.com/xiaoxinkeji/aimili-vpngate/pkgs/container/aimili-vpngate)
+[![GitHub Actions](https://img.shields.io/github/actions/workflow/status/xiaoxinkeji/aimili-vpngate/docker-publish.yml?branch=main&label=build)](https://github.com/xiaoxinkeji/aimili-vpngate/actions)
+
 Bilingual: [中文](#中文) | [English](#english)
 
 ---
@@ -39,6 +42,27 @@ AimiliVPN 是一款基于官方 VPNGate 开放协议的高性能、零依赖 VPN
 bash <(curl -Ls https://raw.githubusercontent.com/baoweise-bot/aimili-vpngate/main/install.sh)
 ```
 > 💡 **小贴士**：部署完成后，终端会输出管理网页的专属链接（含随机安全后缀，如 `http://your_vps_ip:8787/u71e9IXp4TPx`）。在终端中输入 `ml` 命令可以随时调出交互式命令行管理菜单。
+
+#### 🐳 Docker 部署
+
+支持通过 Docker / Docker Compose 一键部署，无需手动安装系统依赖：
+
+```bash
+# Docker Compose (推荐)
+docker compose up -d
+
+# 或手动 docker run
+docker run -d \
+  --name aimilivpn \
+  --network host \
+  --cap-add=NET_ADMIN \
+  --cap-add=NET_RAW \
+  --device=/dev/net/tun \
+  -v $(pwd)/vpngate_data:/opt/aimilivpn/vpngate_data \
+  ghcr.io/xiaoxinkeji/aimili-vpngate:latest
+```
+
+> ⚠️ **注意**：Docker 容器必须使用 `--network host` 和 `--cap-add=NET_ADMIN` 参数，因为需要操作 TUN 虚拟网卡和系统路由表。
 
 ---
 
@@ -167,6 +191,27 @@ bash <(curl -Ls https://raw.githubusercontent.com/baoweise-bot/aimili-vpngate/ma
 ```
 
 > 💡 **Quick Note**: Once installed, copy the printed URL from the terminal to access the Web UI. Type the `ml` command in the terminal to summon the interactive CLI management console.
+
+#### 🐳 Docker Deployment
+
+Deploy with Docker / Docker Compose without installing system dependencies:
+
+```bash
+# Docker Compose (Recommended)
+docker compose up -d
+
+# Or manual docker run
+docker run -d \
+  --name aimilivpn \
+  --network host \
+  --cap-add=NET_ADMIN \
+  --cap-add=NET_RAW \
+  --device=/dev/net/tun \
+  -v $(pwd)/vpngate_data:/opt/aimilivpn/vpngate_data \
+  ghcr.io/xiaoxinkeji/aimili-vpngate:latest
+```
+
+> ⚠️ **Important**: Docker containers must use `--network host` and `--cap-add=NET_ADMIN` because they need to operate TUN virtual network cards and system routing tables.
 
 ---
 
