@@ -1,4 +1,4 @@
-.PHONY: build push up down logs stats clean shell
+.PHONY: build push up down logs stats clean shell monitor-up monitor-down auto-update
 
 IMAGE ?= ghcr.io/xiaoxinkeji/aimili-vpngate
 TAG   ?= latest
@@ -13,7 +13,7 @@ build:
 		-t $(IMAGE):$(TAG) \
 		.
 
-# 多架构构建 (需要 buildx)
+# 多架构构建 + 推送
 buildx:
 	docker buildx build \
 		--platform $(PLATFORMS) \
@@ -24,7 +24,6 @@ buildx:
 		--push \
 		.
 
-# 推送
 push:
 	docker push $(IMAGE):$(TAG)
 
@@ -37,6 +36,17 @@ down:
 
 restart:
 	docker compose restart
+
+# ── 自动更新 ──────────────────────────────────────────
+auto-update:
+	docker compose --profile auto-update up -d watchtower
+
+# ── 监控栈 ────────────────────────────────────────────
+monitor-up:
+	docker compose -f docker-compose.yml -f contrib/docker-compose.monitor.yml up -d
+
+monitor-down:
+	docker compose -f docker-compose.yml -f contrib/docker-compose.monitor.yml down
 
 # ── 运维 ──────────────────────────────────────────────
 logs:
@@ -52,9 +62,10 @@ health:
 	@docker inspect --format='{{.State.Health.Status}}' aimilivpn
 
 metrics:
-	@curl -s http://localhost:9798/metrics || echo "Metrics not available, ensure METRICS_ENABLED=true"
+	@curl -s http://localhost:9798/metrics | head -50 || echo "Metrics not available"
 
 # ── 清理 ──────────────────────────────────────────────
 clean:
 	docker compose down -v
 	rm -rf vpngate_data
+	docker compose -f contrib/docker-compose.monitor.yml down -v 2>/dev/null || true

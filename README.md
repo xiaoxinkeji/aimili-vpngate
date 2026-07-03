@@ -153,6 +153,34 @@ environment:
   - METRICS_ENABLED=false
 ```
 
+#### 📈 Grafana 监控面板
+
+预配置的 Grafana Dashboard，开箱即用。包含服务健康、延迟、CPU/内存、节点池统计等面板。
+
+**一键启动监控栈 (Prometheus + Grafana)：**
+```bash
+docker compose -f docker-compose.yml -f contrib/docker-compose.monitor.yml up -d
+```
+
+访问 `http://宿主机IP:3000` (admin/admin)，Dashboard 已自动导入。
+
+#### 🔄 自动更新
+
+通过 Watchtower 自动拉取最新镜像并重启容器，无需手动更新：
+
+```bash
+# 启用自动更新 (每 6 小时检查一次)
+docker compose --profile auto-update up -d
+```
+
+#### 🛡️ 安全加固
+
+容器默认启用以下安全措施：
+- `cap_drop: ALL` -- 移除所有非必要 Capability，仅保留 NET_ADMIN/NET_RAW
+- `no-new-privileges: true` -- 禁止进程提权
+- `tmpfs: /tmp, /run` -- 临时文件系统隔离
+- 资源限制 CPU 2 核 / 内存 512MB
+
 ---
 
 ### 💡 快速使用指南 (小白必看)
@@ -390,6 +418,34 @@ scrape_configs:
 environment:
   - METRICS_ENABLED=false
 ```
+
+#### 📈 Grafana Dashboard
+
+Pre-configured Grafana Dashboard with service health, latency, CPU/memory, and node pool panels.
+
+**Launch monitoring stack (Prometheus + Grafana):**
+```bash
+docker compose -f docker-compose.yml -f contrib/docker-compose.monitor.yml up -d
+```
+
+Open `http://your_vps_ip:3000` (admin/admin), dashboard auto-imported.
+
+#### 🔄 Auto-Update
+
+Automatically pull the latest image and restart the container via Watchtower:
+
+```bash
+# Enable auto-update (checks every 6 hours)
+docker compose --profile auto-update up -d
+```
+
+#### 🛡️ Security Hardening
+
+Container is hardened by default:
+- `cap_drop: ALL` -- Drop all capabilities except NET_ADMIN/NET_RAW
+- `no-new-privileges: true` -- Prevent privilege escalation
+- `tmpfs: /tmp, /run` -- Isolate temporary filesystems
+- Resource limits: 2 CPUs / 512MB memory
 
 ---
 

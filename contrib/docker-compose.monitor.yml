@@ -1,0 +1,51 @@
+# AimiliVPN 监控栈 (Prometheus + Grafana)
+# 使用方式:
+#   docker compose -f docker-compose.yml -f contrib/docker-compose.monitor.yml up -d
+# Grafana: http://localhost:3000 (admin/admin)
+# Dashboard 已预配置，数据源自动对接
+
+services:
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: aimilivpn-prometheus
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./contrib/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=15d"
+      - "--web.listen-address=:9091"
+      - "--web.enable-lifecycle"
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 256M
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: aimilivpn-grafana
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_INSTALL_PLUGINS=
+      - GF_AUTH_ANONYMOUS_ENABLED=false
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./contrib/grafana/dashboard.json:/etc/grafana/provisioning/dashboards/aimilivpn.json:ro
+      - ./contrib/grafana/datasource.yml:/etc/grafana/provisioning/datasources/datasource.yml:ro
+      - ./contrib/grafana/dashboard-provider.yml:/etc/grafana/provisioning/dashboards/provider.yml:ro
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 256M
+
+volumes:
+  prometheus_data:
+  grafana_data:

@@ -1,0 +1,264 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "links": [],
+  "panels": [
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "id": 100,
+      "panels": [],
+      "title": "Overview",
+      "type": "row"
+    },
+    {
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "mappings": [
+            { "options": { "0": { "color": "red", "index": 0, "text": "IDLE" } }, "type": "value" },
+            { "options": { "1": { "color": "orange", "index": 1, "text": "CONNECTING" } }, "type": "value" },
+            { "options": { "2": { "color": "green", "index": 2, "text": "CONNECTED" } }, "type": "value" }
+          ],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }] }
+        }
+      },
+      "gridPos": { "h": 8, "w": 6, "x": 0, "y": 1 },
+      "id": 1,
+      "options": { "colorMode": "background", "graphMode": "none", "textMode": "auto" },
+      "targets": [{ "expr": "aimilivpn_connection_status", "refId": "A" }],
+      "title": "Connection Status",
+      "type": "stat"
+    },
+    {
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "mappings": [
+            { "options": { "0": { "color": "red", "index": 0, "text": "DOWN" } }, "type": "value" },
+            { "options": { "1": { "color": "green", "index": 1, "text": "HEALTHY" } }, "type": "value" }
+          ],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }] }
+        }
+      },
+      "gridPos": { "h": 8, "w": 6, "x": 6, "y": 1 },
+      "id": 2,
+      "options": { "colorMode": "background", "graphMode": "none", "textMode": "auto" },
+      "targets": [{ "expr": "aimilivpn_proxy_healthy", "refId": "A" }],
+      "title": "Proxy Health",
+      "type": "stat"
+    },
+    {
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] }
+        }
+      },
+      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 1 },
+      "id": 3,
+      "options": { "colorMode": "value", "graphMode": "none", "textMode": "name" },
+      "targets": [{ "expr": "aimilivpn_active_node_latency_ms", "legendFormat": "Latency", "refId": "A" }],
+      "title": "Node Latency",
+      "type": "stat"
+    },
+    {
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] },
+          "unit": "s"
+        }
+      },
+      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 1 },
+      "id": 4,
+      "options": { "colorMode": "value", "graphMode": "area", "textMode": "auto" },
+      "targets": [{ "expr": "aimilivpn_uptime_seconds", "refId": "A" }],
+      "title": "Uptime",
+      "type": "stat"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 9 },
+      "id": 200,
+      "panels": [],
+      "title": "Service Health",
+      "type": "row"
+    },
+    {
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "custom": { "fillOpacity": 70, "lineWidth": 0, "spanNulls": false },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 0.5 }] }
+        }
+      },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 10 },
+      "id": 5,
+      "options": { "orientation": "horizontal", "showValue": "auto", "stacking": "normal" },
+      "targets": [
+        { "expr": "aimilivpn_up", "legendFormat": "{{component}}", "refId": "A" }
+      ],
+      "title": "Component Liveness (1=UP, 0=DOWN)",
+      "type": "bargauge"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 18 },
+      "id": 300,
+      "panels": [],
+      "title": "Performance",
+      "type": "row"
+    },
+    {
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "fillOpacity": 15, "lineWidth": 2, "spanNulls": true },
+          "unit": "ms"
+        }
+      },
+      "gridPos": { "h": 10, "w": 12, "x": 0, "y": 19 },
+      "id": 6,
+      "options": { "legend": { "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "expr": "aimilivpn_proxy_latency_ms", "legendFormat": "Proxy Latency", "refId": "A" },
+        { "expr": "aimilivpn_active_node_latency_ms", "legendFormat": "Node Latency", "refId": "B" }
+      ],
+      "title": "Latency (ms)",
+      "type": "timeseries"
+    },
+    {
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "fillOpacity": 15, "lineWidth": 2, "spanNulls": true },
+          "unit": "bytes"
+        }
+      },
+      "gridPos": { "h": 10, "w": 12, "x": 12, "y": 19 },
+      "id": 7,
+      "options": { "legend": { "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "expr": "aimilivpn_process_resident_memory_bytes", "legendFormat": "RSS Memory", "refId": "A" },
+        { "expr": "aimilivpn_process_virtual_memory_bytes", "legendFormat": "Virtual Memory", "refId": "B" }
+      ],
+      "title": "Process Memory",
+      "type": "timeseries"
+    },
+    {
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "fillOpacity": 15, "lineWidth": 2, "spanNulls": true },
+          "unit": "s"
+        }
+      },
+      "gridPos": { "h": 10, "w": 12, "x": 0, "y": 29 },
+      "id": 8,
+      "options": { "legend": { "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "expr": "rate(aimilivpn_process_cpu_seconds_total[1m])", "legendFormat": "CPU Usage (rate)", "refId": "A" }
+      ],
+      "title": "CPU Usage",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 39 },
+      "id": 400,
+      "panels": [],
+      "title": "Node Pool",
+      "type": "row"
+    },
+    {
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] }
+        }
+      },
+      "gridPos": { "h": 6, "w": 4, "x": 0, "y": 40 },
+      "id": 9,
+      "options": { "colorMode": "value", "graphMode": "area", "textMode": "auto" },
+      "targets": [{ "expr": "aimilivpn_nodes_total", "refId": "A" }],
+      "title": "Total Nodes",
+      "type": "stat"
+    },
+    {
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" } } },
+      "gridPos": { "h": 6, "w": 4, "x": 4, "y": 40 },
+      "id": 10,
+      "options": { "displayLabels": ["name", "percent"], "legend": { "placement": "right" }, "pieType": "pie" },
+      "targets": [{ "expr": "aimilivpn_nodes_by_status", "legendFormat": "{{status}}", "refId": "A" }],
+      "title": "By Probe Status",
+      "type": "piechart"
+    },
+    {
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" } } },
+      "gridPos": { "h": 6, "w": 4, "x": 8, "y": 40 },
+      "id": 11,
+      "options": { "displayLabels": ["name", "percent"], "legend": { "placement": "right" }, "pieType": "pie" },
+      "targets": [{ "expr": "aimilivpn_nodes_by_type", "legendFormat": "{{type}}", "refId": "A" }],
+      "title": "By IP Type",
+      "type": "piechart"
+    },
+    {
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "orange", "value": null }, { "color": "red", "value": 5 }] }
+        }
+      },
+      "gridPos": { "h": 6, "w": 4, "x": 12, "y": 40 },
+      "id": 12,
+      "options": { "colorMode": "value", "graphMode": "area", "textMode": "auto" },
+      "targets": [{ "expr": "aimilivpn_blacklisted_nodes", "refId": "A" }],
+      "title": "Blacklisted",
+      "type": "stat"
+    },
+    {
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 50 }, { "color": "red", "value": 200 }] }
+        }
+      },
+      "gridPos": { "h": 6, "w": 8, "x": 16, "y": 40 },
+      "id": 13,
+      "options": { "colorMode": "value", "graphMode": "area", "textMode": "auto" },
+      "targets": [{ "expr": "aimilivpn_active_node_score", "refId": "A" }],
+      "title": "Active Node Score",
+      "type": "stat"
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "tags": ["aimilivpn", "vpn", "proxy"],
+  "templating": {
+    "list": [
+      {
+        "current": { "text": "Prometheus", "value": "Prometheus" },
+        "hide": 0,
+        "label": "Datasource",
+        "name": "DS_PROMETHEUS",
+        "query": "prometheus",
+        "type": "datasource"
+      }
+    ]
+  },
+  "time": { "from": "now-6h", "to": "now" },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "AimiliVPN",
+  "uid": "aimilivpn",
+  "version": 1
+}

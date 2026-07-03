@@ -6,12 +6,15 @@ services:
         IMAGE_VERSION: dev
         BUILD_DATE: unknown
         GIT_COMMIT: unknown
+    image: ghcr.io/xiaoxinkeji/aimili-vpngate:latest
     container_name: aimilivpn
     restart: unless-stopped
     network_mode: host
     cap_add:
       - NET_ADMIN
       - NET_RAW
+    cap_drop:
+      - ALL
     devices:
       - /dev/net/tun:/dev/net/tun
     environment:
@@ -20,14 +23,13 @@ services:
       - LOCAL_PROXY_PORT=7928
       - UI_HOST=::
       - UI_PORT=8787
-      # ─── Prometheus 监控指标 ───
       - METRICS_ENABLED=true
       - METRICS_PORT=9798
       - METRICS_REFRESH_INTERVAL=15
-      # ─── 上游代理 (用于拉取 VPNGate 节点列表) ───
+      # ─── 上游代理 ───
       # - http_proxy=http://proxy_ip:port
       # - OPENVPN_UPSTREAM_SOCKS=socks5://proxy_ip:port
-      # ─── 代理认证 (保护本地代理不被未授权使用) ───
+      # ─── 代理认证 ───
       # - LOCAL_PROXY_USER=myuser
       # - LOCAL_PROXY_PASS=mypass
       # ─── 性能调优 ───
@@ -36,10 +38,16 @@ services:
       # - MAX_SCAN_ROWS=300
     volumes:
       - ./vpngate_data:/opt/aimilivpn/vpngate_data
+    tmpfs:
+      - /tmp:exec
+      - /run:exec
     sysctls:
       - net.ipv4.conf.all.rp_filter=2
       - net.ipv4.conf.default.rp_filter=2
       - net.ipv4.ip_forward=1
+    # ─── 安全加固 ───
+    security_opt:
+      - no-new-privileges:true
     # ─── 资源限制 ───
     deploy:
       resources:
@@ -49,7 +57,7 @@ services:
         reservations:
           cpus: "0.25"
           memory: 128M
-    # ─── 日志轮转 (防止日志无限增长) ───
+    # ─── 日志轮转 ───
     logging:
       driver: json-file
       options:
@@ -66,5 +74,21 @@ services:
       timeout: 10s
       start_period: 90s
       retries: 3
-    # 如果 TUN 设备权限有问题，取消注释下面这行
-    # privileged: true
+
+  # ─── 自动更新 (Watchtower) ───
+  # 每 6 小时检查一次镜像更新，自动拉取并重启容器
+  watchtower:
+    image: containrrr/watchtower:latest
+    container_name: aimilivpn-watchtower
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - WATCHTOWER_CLEANUP=true
+      - WATCHTOWER_POLL_INTERVAL=21600
+      - WATCHTOWER_LABEL_ENABLE=true
+      - WATCHTOWER_NOTIFICATIONS=none
+    # 只更新带有特定标签的容器
+    command: --interval 21600 aimilivpn
+    profiles:
+      - auto-update

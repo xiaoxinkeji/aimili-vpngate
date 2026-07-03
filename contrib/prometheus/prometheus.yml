@@ -1,0 +1,12 @@
+global:
+  scrape_interval: 30s
+  evaluation_interval: 30s
+
+scrape_configs:
+  - job_name: aimilivpn
+    static_configs:
+      # 指向运行 aimilivpn 容器的宿主机 IP
+      # host 网络模式下，metrics 端口直接暴露在宿主机
+      - targets: ["host.docker.internal:9798"]
+        labels:
+          instance: aimilivpn
