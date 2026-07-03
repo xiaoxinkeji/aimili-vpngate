@@ -45,7 +45,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/baoweise-bot/aimili-vpngate/ma
 
 #### 🐳 Docker 部署
 
-支持通过 Docker / Docker Compose 一键部署，无需手动安装系统依赖。
+支持通过 Docker / Docker Compose 一键部署，无需手动安装系统依赖。镜像自动构建多架构 (`amd64` / `arm64`)，内置健康检查和优雅关闭。
 
 **前置条件：** 宿主机需加载 tun 内核模块：
 ```bash
@@ -57,6 +57,7 @@ lsmod | grep tun || modprobe tun
 ```bash
 # 下载 docker-compose.yml
 wget https://raw.githubusercontent.com/xiaoxinkeji/aimili-vpngate/main/docker-compose.yml
+# 启动 (自动拉起 OpenVPN + Web UI + SOCKS5/HTTP 代理)
 docker compose up -d
 ```
 
@@ -73,14 +74,24 @@ docker run -d \
   ghcr.io/xiaoxinkeji/aimili-vpngate:latest
 ```
 
-**验证容器运行状态：**
+**容器内管理命令：**
 ```bash
+# 查看容器实时状态 (进程、端口、节点、路由、最近日志)
+docker exec -it aimilivpn docker-stats
+
 # 查看启动日志
 docker logs -f aimilivpn
 
-# 进入容器内管理终端
-docker exec -it aimilivpn python3 /usr/bin/ml status
+# 健康检查状态
+docker inspect --format='{{.State.Health.Status}}' aimilivpn
 ```
+
+**Docker 容器特性：**
+- **启动预检**：自动检查 TUN 设备、openvpn、iptables、内核参数
+- **健康检查**：每 30s 检测进程存活和 Web UI 可达性
+- **优雅关闭**：收到 SIGTERM 后自动停止 OpenVPN、清理路由表再退出
+- **多架构**：同时支持 `linux/amd64` 和 `linux/arm64` (树莓派等 ARM 设备)
+- **持久化**：节点缓存、配置、日志均通过 volume 持久化
 
 **环境变量说明：**
 
@@ -92,6 +103,7 @@ docker exec -it aimilivpn python3 /usr/bin/ml status
 | `LOCAL_PROXY_PORT` | `7928` | HTTP/SOCKS5 代理端口 |
 | `LOCAL_PROXY_USER` | (无) | 代理认证用户名 |
 | `LOCAL_PROXY_PASS` | (无) | 代理认证密码 |
+| `LOCAL_PROXY_MAX_CONNECTIONS` | `256` | 代理最大并发连接数 |
 | `http_proxy` | (无) | 上游 HTTP 代理（用于拉取节点） |
 | `OPENVPN_UPSTREAM_SOCKS` | (无) | 上游 SOCKS5 代理 |
 
@@ -227,7 +239,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/baoweise-bot/aimili-vpngate/ma
 
 #### 🐳 Docker Deployment
 
-Deploy with Docker / Docker Compose without installing system dependencies.
+Deploy with Docker / Docker Compose without installing system dependencies. Image is auto-built for multi-arch (`amd64` / `arm64`) with built-in health checks and graceful shutdown.
 
 **Prerequisites:** Host must have tun kernel module loaded:
 ```bash
@@ -239,6 +251,7 @@ lsmod | grep tun || modprobe tun
 ```bash
 # Download docker-compose.yml
 wget https://raw.githubusercontent.com/xiaoxinkeji/aimili-vpngate/main/docker-compose.yml
+# Start (auto-launches OpenVPN + Web UI + SOCKS5/HTTP proxy)
 docker compose up -d
 ```
 
@@ -255,14 +268,24 @@ docker run -d \
   ghcr.io/xiaoxinkeji/aimili-vpngate:latest
 ```
 
-**Verify container status:**
+**Container management commands:**
 ```bash
+# View real-time container status (process, ports, node, routes, recent logs)
+docker exec -it aimilivpn docker-stats
+
 # View startup logs
 docker logs -f aimilivpn
 
-# Enter container management console
-docker exec -it aimilivpn python3 /usr/bin/ml status
+# Health check status
+docker inspect --format='{{.State.Health.Status}}' aimilivpn
 ```
+
+**Docker container features:**
+- **Startup pre-check**: Auto-verify TUN device, openvpn, iptables, kernel parameters
+- **Health check**: Check process liveness and Web UI reachability every 30s
+- **Graceful shutdown**: Auto-stop OpenVPN, clean up routes on SIGTERM before exit
+- **Multi-arch**: Supports `linux/amd64` and `linux/arm64` (Raspberry Pi, etc.)
+- **Persistence**: Node cache, configs, logs persisted via volume
 
 **Environment Variables:**
 
@@ -274,6 +297,7 @@ docker exec -it aimilivpn python3 /usr/bin/ml status
 | `LOCAL_PROXY_PORT` | `7928` | HTTP/SOCKS5 proxy port |
 | `LOCAL_PROXY_USER` | (none) | Proxy auth username |
 | `LOCAL_PROXY_PASS` | (none) | Proxy auth password |
+| `LOCAL_PROXY_MAX_CONNECTIONS` | `256` | Max concurrent proxy connections |
 | `http_proxy` | (none) | Upstream HTTP proxy for node fetching |
 | `OPENVPN_UPSTREAM_SOCKS` | (none) | Upstream SOCKS5 proxy |
 
