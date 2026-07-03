@@ -24,6 +24,7 @@ DATA_DIR = Path(os.environ.get("VPNGATE_DATA_DIR", "/opt/aimilivpn/vpngate_data"
 METRICS_PORT = int(os.environ.get("METRICS_PORT", "9798"))
 METRICS_HOST = os.environ.get("METRICS_HOST", "0.0.0.0")
 REFRESH_INTERVAL = int(os.environ.get("METRICS_REFRESH_INTERVAL", "15"))
+_START_TIME = time.time()
 
 _cache: dict[str, Any] = {}
 _cache_lock = threading.Lock()
@@ -179,7 +180,7 @@ def refresh_cache() -> None:
         pass
 
     # 系统信息
-    data["uptime_seconds"] = time.time() - safe_float(state.get("_start_time", time.time()))
+    data["uptime_seconds"] = time.time() - _START_TIME
 
     with _cache_lock:
         _cache.clear()

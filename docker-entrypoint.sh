@@ -78,7 +78,7 @@ echo -e "  ${GREEN}✓ rp_filter 已设为宽松模式${PLAIN}"
 
 # 3. 依赖检查
 echo -e "${BOLD}[3/5]${PLAIN} 检查系统依赖..."
-OVPN_VER=$(openvpn --version 2>&1 | head -1 || echo "unknown")
+OVPN_VER=$(openvpn --version 2>&1 | head -n 1 || echo "unknown")
 echo -e "  ${GREEN}✓ openvpn: ${OVPN_VER}${PLAIN}"
 PY_VER=$(python3 --version 2>&1)
 echo -e "  ${GREEN}✓ ${PY_VER}${PLAIN}"

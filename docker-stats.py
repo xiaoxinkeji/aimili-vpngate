@@ -79,7 +79,9 @@ def main():
 
     # 读取状态文件
     state = read_json(DATA_DIR / "state.json", {})
-    if state:
+    if not state:
+        print(f"  {BOLD}连接状态:{RESET} {YELLOW}状态文件为空或不存在{RESET}")
+    else:
         active_id = state.get("active_openvpn_node_id", "")
         is_connecting = state.get("is_connecting", False)
         latency = state.get("active_node_latency", "-")
@@ -115,22 +117,23 @@ def main():
         today = time.strftime("%Y-%m-%d")
         today_log = log_dir / f"{today}.json"
         if today_log.exists():
-            entries = read_json(today_log) if today_log.stat().st_size < 1024 * 1024 else None
-            if isinstance(entries, list):
-                pass
-            else:
-                try:
-                    lines = today_log.read_text(encoding="utf-8").strip().splitlines()
-                    entries = [json.loads(l) for l in lines[-5:] if l.strip()]
-                except Exception:
-                    entries = []
+            entries = []
+            total_count = 0
+            try:
+                lines_data = today_log.read_text(encoding="utf-8").strip().splitlines()
+                total_count = len(lines_data)
+                entries = [json.loads(l) for l in lines_data[-5:] if l.strip()]
+            except Exception:
+                entries = []
+                total_count = 0
         else:
             entries = []
     else:
         entries = []
 
     if entries:
-        print(f"  {BOLD}最近日志 ({len(entries)} 条):{RESET}")
+        count_info = f"共 {total_count} 条" if total_count else f"{len(entries)} 条"
+        print(f"  {BOLD}最近日志 ({count_info}, 显示最近 {len(entries)} 条):{RESET}")
         for entry in entries[-5:]:
             ts = entry.get("timestamp", "")
             level = entry.get("level", "INFO")
