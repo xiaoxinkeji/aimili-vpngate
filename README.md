@@ -45,22 +45,55 @@ bash <(curl -Ls https://raw.githubusercontent.com/baoweise-bot/aimili-vpngate/ma
 
 #### 🐳 Docker 部署
 
-支持通过 Docker / Docker Compose 一键部署，无需手动安装系统依赖：
+支持通过 Docker / Docker Compose 一键部署，无需手动安装系统依赖。
 
+**前置条件：** 宿主机需加载 tun 内核模块：
 ```bash
-# Docker Compose (推荐)
-docker compose up -d
+# 检查并加载 tun 模块
+lsmod | grep tun || modprobe tun
+```
 
-# 或手动 docker run
+**docker-compose 部署（推荐）：**
+```bash
+# 下载 docker-compose.yml
+wget https://raw.githubusercontent.com/xiaoxinkeji/aimili-vpngate/main/docker-compose.yml
+docker compose up -d
+```
+
+**手动 docker run：**
+```bash
 docker run -d \
   --name aimilivpn \
   --network host \
   --cap-add=NET_ADMIN \
   --cap-add=NET_RAW \
-  --device=/dev/net/tun \
+  --device=/dev/net/tun:/dev/net/tun \
   -v $(pwd)/vpngate_data:/opt/aimilivpn/vpngate_data \
+  -e VPNGATE_DATA_DIR=/opt/aimilivpn/vpngate_data \
   ghcr.io/xiaoxinkeji/aimili-vpngate:latest
 ```
+
+**验证容器运行状态：**
+```bash
+# 查看启动日志
+docker logs -f aimilivpn
+
+# 进入容器内管理终端
+docker exec -it aimilivpn python3 /usr/bin/ml status
+```
+
+**环境变量说明：**
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `UI_HOST` | `::` | Web 管理后台绑定地址 |
+| `UI_PORT` | `8787` | Web 管理后台端口 |
+| `LOCAL_PROXY_HOST` | `127.0.0.1` | 代理监听地址 |
+| `LOCAL_PROXY_PORT` | `7928` | HTTP/SOCKS5 代理端口 |
+| `LOCAL_PROXY_USER` | (无) | 代理认证用户名 |
+| `LOCAL_PROXY_PASS` | (无) | 代理认证密码 |
+| `http_proxy` | (无) | 上游 HTTP 代理（用于拉取节点） |
+| `OPENVPN_UPSTREAM_SOCKS` | (无) | 上游 SOCKS5 代理 |
 
 > ⚠️ **注意**：Docker 容器必须使用 `--network host` 和 `--cap-add=NET_ADMIN` 参数，因为需要操作 TUN 虚拟网卡和系统路由表。
 
@@ -194,22 +227,55 @@ bash <(curl -Ls https://raw.githubusercontent.com/baoweise-bot/aimili-vpngate/ma
 
 #### 🐳 Docker Deployment
 
-Deploy with Docker / Docker Compose without installing system dependencies:
+Deploy with Docker / Docker Compose without installing system dependencies.
 
+**Prerequisites:** Host must have tun kernel module loaded:
 ```bash
-# Docker Compose (Recommended)
-docker compose up -d
+# Check and load tun module
+lsmod | grep tun || modprobe tun
+```
 
-# Or manual docker run
+**docker-compose (Recommended):**
+```bash
+# Download docker-compose.yml
+wget https://raw.githubusercontent.com/xiaoxinkeji/aimili-vpngate/main/docker-compose.yml
+docker compose up -d
+```
+
+**Manual docker run:**
+```bash
 docker run -d \
   --name aimilivpn \
   --network host \
   --cap-add=NET_ADMIN \
   --cap-add=NET_RAW \
-  --device=/dev/net/tun \
+  --device=/dev/net/tun:/dev/net/tun \
   -v $(pwd)/vpngate_data:/opt/aimilivpn/vpngate_data \
+  -e VPNGATE_DATA_DIR=/opt/aimilivpn/vpngate_data \
   ghcr.io/xiaoxinkeji/aimili-vpngate:latest
 ```
+
+**Verify container status:**
+```bash
+# View startup logs
+docker logs -f aimilivpn
+
+# Enter container management console
+docker exec -it aimilivpn python3 /usr/bin/ml status
+```
+
+**Environment Variables:**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `UI_HOST` | `::` | Web UI bind address |
+| `UI_PORT` | `8787` | Web UI port |
+| `LOCAL_PROXY_HOST` | `127.0.0.1` | Proxy listen address |
+| `LOCAL_PROXY_PORT` | `7928` | HTTP/SOCKS5 proxy port |
+| `LOCAL_PROXY_USER` | (none) | Proxy auth username |
+| `LOCAL_PROXY_PASS` | (none) | Proxy auth password |
+| `http_proxy` | (none) | Upstream HTTP proxy for node fetching |
+| `OPENVPN_UPSTREAM_SOCKS` | (none) | Upstream SOCKS5 proxy |
 
 > ⚠️ **Important**: Docker containers must use `--network host` and `--cap-add=NET_ADMIN` because they need to operate TUN virtual network cards and system routing tables.
 

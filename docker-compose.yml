@@ -15,9 +15,17 @@ services:
       - LOCAL_PROXY_PORT=7928
       - UI_HOST=::
       - UI_PORT=8787
+      # 可选: 上游代理 (如需通过代理获取 VPNGate 节点列表)
+      # - http_proxy=http://proxy_ip:port
+      # - OPENVPN_UPSTREAM_SOCKS=socks5://proxy_ip:port
+      # 可选: 代理认证
+      # - LOCAL_PROXY_USER=myuser
+      # - LOCAL_PROXY_PASS=mypass
     volumes:
       - ./vpngate_data:/opt/aimilivpn/vpngate_data
     sysctls:
       - net.ipv4.conf.all.rp_filter=2
       - net.ipv4.conf.default.rp_filter=2
       - net.ipv4.ip_forward=1
+    # 如果 TUN 设备权限有问题，可以取消注释下面这行使用特权模式
+    # privileged: true

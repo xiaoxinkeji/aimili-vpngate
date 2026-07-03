@@ -30,5 +30,7 @@ ENV UI_PORT=8787
 
 EXPOSE 8787 7928
 
-# 入口: 以 root 运行管理器
-CMD ["python3", "/opt/aimilivpn/vpngate_manager.py"]
+COPY docker-entrypoint.sh /usr/local/bin/
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
