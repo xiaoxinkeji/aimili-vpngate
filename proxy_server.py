@@ -221,17 +221,46 @@ def create_connection(address: tuple[str, int], timeout: float = 20) -> socket.s
         raise OSError("getaddrinfo returns empty list")
 
 def relay(left: socket.socket, right: socket.socket) -> None:
+    left.setblocking(False)
+    right.setblocking(False)
     sockets = [left, right]
+    write_bufs: dict[socket.socket, bytearray] = {}
     while True:
-        readable, _, errored = select.select(sockets, [], sockets, 120)
-        if errored or not readable:
+        read_list = [s for s in sockets if s not in write_bufs or len(write_bufs[s]) < 262144]
+        write_list = [s for s in sockets if s in write_bufs and len(write_bufs[s]) > 0]
+        if not read_list and not write_list:
+            read_list = sockets[:]
+        readable, writable, errored = select.select(read_list, write_list, sockets, 120)
+        if errored:
             return
-        for source in readable:
-            target = right if source is left else left
-            data = source.recv(65536)
-            if not data:
+        if not readable and not writable:
+            return
+        for sock in writable:
+            buf = write_bufs.get(sock)
+            if not buf:
+                continue
+            try:
+                sent = sock.send(bytes(buf))
+                if sent > 0:
+                    del buf[:sent]
+                if len(buf) == 0:
+                    del write_bufs[sock]
+            except (BlockingIOError, InterruptedError):
+                pass
+            except OSError:
                 return
-            target.sendall(data)
+        for sock in readable:
+            other = right if sock is left else left
+            try:
+                data = sock.recv(65536)
+                if not data:
+                    return
+                target_buf = write_bufs.setdefault(other, bytearray())
+                target_buf.extend(data)
+            except (BlockingIOError, InterruptedError):
+                pass
+            except OSError:
+                return
 
 def socks5_client(client: socket.socket, first_byte: bytes) -> None:
     upstream = None

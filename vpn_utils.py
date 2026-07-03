@@ -351,11 +351,21 @@ def check_and_fix_dns() -> None:
     resolv_file = Path("/etc/resolv.conf")
     if resolv_file.exists():
         try:
+            if not os.access(resolv_file, os.W_OK):
+                print("[dns_heal] /etc/resolv.conf is not writable, skip DNS fix", flush=True)
+                return
             content = resolv_file.read_text(encoding="utf-8", errors="replace")
-            if "nameserver 1.1.1.1" not in content and "nameserver 8.8.8.8" not in content:
-                print("[dns_heal] Resolving names failed, but IP network is OK. Appending public DNS to /etc/resolv.conf...", flush=True)
-                with open("/etc/resolv.conf", "a", encoding="utf-8") as f:
-                    f.write("\nnameserver 1.1.1.1\nnameserver 8.8.8.8\n")
+            existing_nameservers = set()
+            for line in content.splitlines():
+                if line.startswith("nameserver "):
+                    existing_nameservers.add(line.split()[1])
+            missing = {"1.1.1.1", "8.8.8.8"} - existing_nameservers
+            if not missing:
+                return
+            print(f"[dns_heal] Resolving names failed, appending DNS: {missing}", flush=True)
+            with open("/etc/resolv.conf", "a", encoding="utf-8") as f:
+                for ns in sorted(missing):
+                    f.write(f"\nnameserver {ns}\n")
         except Exception as e:
             print(f"[dns_heal] Failed to write DNS fallback: {e}", flush=True)
 

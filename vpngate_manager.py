@@ -379,7 +379,7 @@ def get_state() -> dict[str, Any]:
     state["connection_enabled"] = ui_cfg.get("connection_enabled", True)
     state["fixed_node_id"] = ui_cfg.get("fixed_node_id", "")
     state["favorite_node_ids"] = ui_cfg.get("favorite_node_ids", [])
-    state["fav_fail_fallback"] = False
+    state["fav_fail_fallback"] = ui_cfg.get("fav_fail_fallback", False)
     
     return state
 
@@ -5088,6 +5088,9 @@ class Handler(BaseHTTPRequestHandler):
             exp_time = active_sessions.get(session_token)
             if exp_time is not None and exp_time > time.time():
                 return True
+            # 清理过期 session
+            if exp_time is not None:
+                active_sessions.pop(session_token, None)
         return False
 
     def validate_path(self) -> str:
@@ -5432,7 +5435,8 @@ class Handler(BaseHTTPRequestHandler):
                     def restart_server():
                         time.sleep(2)
                         print("[系统] 管理后台安全配置更新，进程即将退出以触发自动重启...", flush=True)
-                        os._exit(0)
+                        # 使用 SIGTERM 触发 Docker 优雅重启 (entrypoint 的 cleanup 会执行)
+                        signal.raise_signal(signal.SIGTERM)
                     
                     threading.Thread(target=restart_server, daemon=True).start()
                 else:
