@@ -13,12 +13,18 @@ CYAN="\033[0;36m"
 PLAIN="\033[0m"
 
 PID_FILE="/tmp/aimilivpn.pid"
+METRICS_PID_FILE="/tmp/aimilivpn_metrics.pid"
 CHILD_PID=""
+METRICS_PID=""
 
 # ── 优雅关闭 ──────────────────────────────────────────
 cleanup() {
     echo ""
     echo -e "${YELLOW}[aimilivpn] 收到停止信号，正在优雅关闭...${PLAIN}"
+    # 先停 metrics exporter
+    if [ -n "$METRICS_PID" ] && kill -0 "$METRICS_PID" 2>/dev/null; then
+        kill -TERM "$METRICS_PID" 2>/dev/null || true
+    fi
     if [ -n "$CHILD_PID" ] && kill -0 "$CHILD_PID" 2>/dev/null; then
         kill -TERM "$CHILD_PID" 2>/dev/null || true
         # 等待最多 15 秒让子进程自行清理 (停止 OpenVPN、清除路由等)
@@ -105,8 +111,22 @@ python3 /opt/aimilivpn/vpngate_manager.py &
 CHILD_PID=$!
 echo "$CHILD_PID" > "$PID_FILE"
 
-# 等待子进程退出
+# ── 启动 Prometheus Metrics Exporter ──────────────────
+if [ "${METRICS_ENABLED:-true}" = "true" ]; then
+    python3 /opt/aimilivpn/metrics_exporter.py &
+    METRICS_PID=$!
+    echo "$METRICS_PID" > "$METRICS_PID_FILE"
+    echo -e "  监控指标:      ${CYAN}http://宿主机IP:${METRICS_PORT:-9798}/metrics${PLAIN}"
+fi
+
+# 等待主进程退出
 wait "$CHILD_PID"
 EXIT_CODE=$?
+
+# 清理 metrics exporter
+if [ -n "$METRICS_PID" ] && kill -0 "$METRICS_PID" 2>/dev/null; then
+    kill -TERM "$METRICS_PID" 2>/dev/null || true
+fi
+
 echo -e "${YELLOW}[aimilivpn] 主进程退出 (code: $EXIT_CODE)${PLAIN}"
 exit $EXIT_CODE

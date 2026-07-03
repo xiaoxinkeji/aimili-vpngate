@@ -109,6 +109,50 @@ docker inspect --format='{{.State.Health.Status}}' aimilivpn
 
 > ⚠️ **注意**：Docker 容器必须使用 `--network host` 和 `--cap-add=NET_ADMIN` 参数，因为需要操作 TUN 虚拟网卡和系统路由表。
 
+#### 📊 Prometheus 监控
+
+容器内置 Prometheus 指标导出器，暴露进程、节点、连接、代理健康等指标。
+
+**接入方式：**
+```bash
+# 指标端点 (默认端口 9798)
+curl http://宿主机IP:9798/metrics
+```
+
+**暴露的指标：**
+
+| 指标名 | 类型 | 说明 |
+|--------|------|------|
+| `aimilivpn_up` | gauge | 各组件存活状态 (manager/openvpn/ui/proxy/tun0) |
+| `aimilivpn_connection_status` | gauge | 连接状态 (0=空闲, 1=切换中, 2=已连接) |
+| `aimilivpn_proxy_healthy` | gauge | 出站代理健康检查是否通过 |
+| `aimilivpn_proxy_latency_ms` | gauge | 出站代理延迟 (毫秒) |
+| `aimilivpn_active_node_info` | gauge | 活动节点元数据 (node_id, country) |
+| `aimilivpn_active_node_latency_ms` | gauge | 活动节点延迟 (毫秒) |
+| `aimilivpn_active_node_score` | gauge | 活动节点评分 |
+| `aimilivpn_nodes_total` | gauge | 节点总数 |
+| `aimilivpn_nodes_by_status` | gauge | 按探测状态分组的节点数 |
+| `aimilivpn_nodes_by_type` | gauge | 按 IP 类型分组的节点数 (residential/hosting) |
+| `aimilivpn_blacklisted_nodes` | gauge | 黑名单节点数 |
+| `aimilivpn_process_cpu_seconds_total` | counter | 进程 CPU 使用时间 |
+| `aimilivpn_process_resident_memory_bytes` | gauge | 进程物理内存占用 |
+| `aimilivpn_uptime_seconds` | gauge | 服务运行时长 (秒) |
+| `aimilivpn_build_info` | gauge | 构建版本信息 |
+
+**Prometheus 配置示例：**
+```yaml
+scrape_configs:
+  - job_name: aimilivpn
+    static_configs:
+      - targets: ["your_vps_ip:9798"]
+```
+
+**关闭指标导出：**
+```yaml
+environment:
+  - METRICS_ENABLED=false
+```
+
 ---
 
 ### 💡 快速使用指南 (小白必看)
@@ -302,6 +346,50 @@ docker inspect --format='{{.State.Health.Status}}' aimilivpn
 | `OPENVPN_UPSTREAM_SOCKS` | (none) | Upstream SOCKS5 proxy |
 
 > ⚠️ **Important**: Docker containers must use `--network host` and `--cap-add=NET_ADMIN` because they need to operate TUN virtual network cards and system routing tables.
+
+#### 📊 Prometheus Monitoring
+
+The container includes a built-in Prometheus metrics exporter that exposes process, node, connection, and proxy health metrics.
+
+**Quick access:**
+```bash
+# Metrics endpoint (default port 9798)
+curl http://your_vps_ip:9798/metrics
+```
+
+**Exposed metrics:**
+
+| Metric | Type | Description |
+|--------|------|-------------|
+| `aimilivpn_up` | gauge | Component liveness (manager/openvpn/ui/proxy/tun0) |
+| `aimilivpn_connection_status` | gauge | Connection status (0=idle, 1=connecting, 2=connected) |
+| `aimilivpn_proxy_healthy` | gauge | Outbound proxy health check result |
+| `aimilivpn_proxy_latency_ms` | gauge | Outbound proxy latency (ms) |
+| `aimilivpn_active_node_info` | gauge | Active node metadata (node_id, country) |
+| `aimilivpn_active_node_latency_ms` | gauge | Active node latency (ms) |
+| `aimilivpn_active_node_score` | gauge | Active node score |
+| `aimilivpn_nodes_total` | gauge | Total managed nodes |
+| `aimilivpn_nodes_by_status` | gauge | Nodes grouped by probe status |
+| `aimilivpn_nodes_by_type` | gauge | Nodes grouped by IP type (residential/hosting) |
+| `aimilivpn_blacklisted_nodes` | gauge | Blacklisted node count |
+| `aimilivpn_process_cpu_seconds_total` | counter | Process CPU seconds |
+| `aimilivpn_process_resident_memory_bytes` | gauge | Process RSS memory |
+| `aimilivpn_uptime_seconds` | gauge | Service uptime (seconds) |
+| `aimilivpn_build_info` | gauge | Build version info |
+
+**Prometheus scrape config:**
+```yaml
+scrape_configs:
+  - job_name: aimilivpn
+    static_configs:
+      - targets: ["your_vps_ip:9798"]
+```
+
+**Disable metrics:**
+```yaml
+environment:
+  - METRICS_ENABLED=false
+```
 
 ---
 

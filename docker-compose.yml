@@ -1,6 +1,11 @@
 services:
   aimilivpn:
-    build: .
+    build:
+      context: .
+      args:
+        IMAGE_VERSION: dev
+        BUILD_DATE: unknown
+        GIT_COMMIT: unknown
     container_name: aimilivpn
     restart: unless-stopped
     network_mode: host
@@ -15,6 +20,10 @@ services:
       - LOCAL_PROXY_PORT=7928
       - UI_HOST=::
       - UI_PORT=8787
+      # ─── Prometheus 监控指标 ───
+      - METRICS_ENABLED=true
+      - METRICS_PORT=9798
+      - METRICS_REFRESH_INTERVAL=15
       # ─── 上游代理 (用于拉取 VPNGate 节点列表) ───
       # - http_proxy=http://proxy_ip:port
       # - OPENVPN_UPSTREAM_SOCKS=socks5://proxy_ip:port
@@ -31,12 +40,31 @@ services:
       - net.ipv4.conf.all.rp_filter=2
       - net.ipv4.conf.default.rp_filter=2
       - net.ipv4.ip_forward=1
-    # 如果 TUN 设备权限有问题，取消注释下面这行
-    # privileged: true
-    # 使用 healthcheck 替代 depends_on 等场景
+    # ─── 资源限制 ───
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 512M
+        reservations:
+          cpus: "0.25"
+          memory: 128M
+    # ─── 日志轮转 (防止日志无限增长) ───
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
+    # ─── 健康检查 ───
     healthcheck:
-      test: ["CMD-SHELL", "pgrep -f vpngate_manager.py > /dev/null && curl -sf --max-time 5 http://localhost:8787/ > /dev/null || exit 1"]
+      test:
+        [
+          "CMD-SHELL",
+          "pgrep -f vpngate_manager.py > /dev/null && curl -sf --max-time 5 http://localhost:8787/ > /dev/null || exit 1",
+        ]
       interval: 30s
       timeout: 10s
       start_period: 90s
       retries: 3
+    # 如果 TUN 设备权限有问题，取消注释下面这行
+    # privileged: true

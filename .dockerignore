@@ -6,4 +6,5 @@ install.sh
 Dockerfile
 .dockerignore
 docker-compose.yml
+Makefile
 vpngate_data/
