@@ -84,12 +84,17 @@ def process_running(pattern: str) -> bool:
 def read_proc_stat(pid: int) -> dict[str, int]:
     try:
         text = Path(f"/proc/{pid}/stat").read_text()
-        parts = text.split()
+        # 进程名在括号中可能含空格，先提取括号后的内容再按空格分割
+        m = re.match(r'^\d+ \((.*?)\) (.*)$', text)
+        if m:
+            parts = m.group(2).split()
+        else:
+            parts = text.split()
         return {
-            "utime": int(parts[13]) if len(parts) > 13 else 0,
-            "stime": int(parts[14]) if len(parts) > 14 else 0,
-            "vsize": int(parts[22]) if len(parts) > 22 else 0,
-            "rss": int(parts[23]) * 4096 if len(parts) > 23 else 0,
+            "utime": int(parts[11]) if len(parts) > 11 else 0,
+            "stime": int(parts[12]) if len(parts) > 12 else 0,
+            "vsize": int(parts[20]) if len(parts) > 20 else 0,
+            "rss": int(parts[21]) * 4096 if len(parts) > 21 else 0,
         }
     except Exception:
         return {"utime": 0, "stime": 0, "vsize": 0, "rss": 0}
@@ -343,10 +348,15 @@ class MetricsHandler(BaseHTTPRequestHandler):
         pass
 
 
+class MetricsServer(ThreadingHTTPServer):
+    """支持 IPv4/IPv6 双栈的 HTTP 服务器"""
+
+
 def main() -> None:
     is_ipv6 = ":" in METRICS_HOST
     af = socket.AF_INET6 if is_ipv6 else socket.AF_INET
-    server = ThreadingHTTPServer((METRICS_HOST, METRICS_PORT), MetricsHandler)
+    MetricsServer.address_family = af
+    server = MetricsServer((METRICS_HOST, METRICS_PORT), MetricsHandler)
     if is_ipv6:
         try:
             server.socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)

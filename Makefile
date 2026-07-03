@@ -65,7 +65,14 @@ metrics:
 	@curl -s http://localhost:9798/metrics | head -50 || echo "Metrics not available"
 
 # ── 清理 ──────────────────────────────────────────────
+# 注意: clean 会删除所有容器数据和配置，使用前请确认
+# 用法: make clean CONFIRM=yes
 clean:
+	@if [ "$(CONFIRM)" != "yes" ]; then \
+		echo "!!! 警告: 此操作将删除所有容器、数据和配置"; \
+		echo "    如需继续，请执行: make clean CONFIRM=yes"; \
+		exit 1; \
+	fi
 	docker compose down -v
 	rm -rf vpngate_data
 	docker compose -f contrib/docker-compose.monitor.yml down -v 2>/dev/null || true

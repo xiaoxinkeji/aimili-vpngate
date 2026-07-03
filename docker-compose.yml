@@ -1,5 +1,7 @@
 services:
   aimilivpn:
+    # 本地开发: 先执行 docker compose build 再 docker compose up -d
+    # 生产部署: docker compose up -d 直接拉取 ghcr.io 上的预构建镜像
     build:
       context: .
       args:
@@ -68,7 +70,7 @@ services:
       test:
         [
           "CMD-SHELL",
-          "pgrep -f vpngate_manager.py > /dev/null && curl -sf --max-time 5 http://localhost:8787/ > /dev/null || exit 1",
+          "pgrep -f vpngate_manager.py > /dev/null && curl -sf --max-time 5 \"http://localhost:$${UI_PORT:-8787}/\" > /dev/null || exit 1",
         ]
       interval: 30s
       timeout: 10s

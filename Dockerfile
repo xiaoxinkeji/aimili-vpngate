@@ -43,6 +43,6 @@ EXPOSE 8787 7928 9798
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=90s --retries=3 \
     CMD pgrep -f vpngate_manager.py > /dev/null && \
-        curl -sf --max-time 5 http://localhost:8787/ > /dev/null || exit 1
+        curl -sf --max-time 5 "http://localhost:${UI_PORT:-8787}/" > /dev/null || exit 1
 
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
