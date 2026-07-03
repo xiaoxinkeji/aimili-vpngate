@@ -15,11 +15,12 @@ RUN apt-get update -q && \
 
 WORKDIR /opt/aimilivpn
 
-COPY proxy_server.py vpngate_manager.py vpn_utils.py metrics_exporter.py ./
+COPY proxy_server.py vpngate_manager.py vpn_utils.py metrics_exporter.py docker-stats.py ./
 COPY docker-entrypoint.sh /usr/local/bin/
-COPY docker-stats.sh /usr/local/bin/
 
-RUN chmod +x /usr/local/bin/docker-entrypoint.sh /usr/local/bin/docker-stats.sh && \
+# docker-stats 快捷命令
+RUN printf '#!/bin/sh\nexec python3 /opt/aimilivpn/docker-stats.py\n' > /usr/local/bin/docker-stats && \
+    chmod +x /usr/local/bin/docker-entrypoint.sh /usr/local/bin/docker-stats && \
     mkdir -p /opt/aimilivpn/vpngate_data
 
 # ── 构建时版本信息 (由 CI 注入) ──

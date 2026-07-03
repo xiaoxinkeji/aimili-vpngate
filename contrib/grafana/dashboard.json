@@ -3,6 +3,11 @@
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 0,
+  "__inputs": [],
+  "__requires": [
+    { "type": "grafana", "id": "grafana", "name": "Grafana", "version": "10.0.0" },
+    { "type": "datasource", "id": "prometheus", "name": "Prometheus", "version": "1.0.0" }
+  ],
   "links": [],
   "panels": [
     {
@@ -14,6 +19,7 @@
       "type": "row"
     },
     {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "thresholds" },
@@ -28,11 +34,12 @@
       "gridPos": { "h": 8, "w": 6, "x": 0, "y": 1 },
       "id": 1,
       "options": { "colorMode": "background", "graphMode": "none", "textMode": "auto" },
-      "targets": [{ "expr": "aimilivpn_connection_status", "refId": "A" }],
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "aimilivpn_connection_status", "refId": "A" }],
       "title": "Connection Status",
       "type": "stat"
     },
     {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "thresholds" },
@@ -46,26 +53,29 @@
       "gridPos": { "h": 8, "w": 6, "x": 6, "y": 1 },
       "id": 2,
       "options": { "colorMode": "background", "graphMode": "none", "textMode": "auto" },
-      "targets": [{ "expr": "aimilivpn_proxy_healthy", "refId": "A" }],
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "aimilivpn_proxy_healthy", "refId": "A" }],
       "title": "Proxy Health",
       "type": "stat"
     },
     {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "thresholds" },
           "mappings": [],
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] }
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] },
+          "unit": "ms"
         }
       },
       "gridPos": { "h": 8, "w": 6, "x": 12, "y": 1 },
       "id": 3,
       "options": { "colorMode": "value", "graphMode": "none", "textMode": "name" },
-      "targets": [{ "expr": "aimilivpn_active_node_latency_ms", "legendFormat": "Latency", "refId": "A" }],
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "aimilivpn_active_node_latency_ms", "legendFormat": "Latency", "refId": "A" }],
       "title": "Node Latency",
       "type": "stat"
     },
     {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "thresholds" },
@@ -77,7 +87,7 @@
       "gridPos": { "h": 8, "w": 6, "x": 18, "y": 1 },
       "id": 4,
       "options": { "colorMode": "value", "graphMode": "area", "textMode": "auto" },
-      "targets": [{ "expr": "aimilivpn_uptime_seconds", "refId": "A" }],
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "aimilivpn_uptime_seconds", "refId": "A" }],
       "title": "Uptime",
       "type": "stat"
     },
@@ -90,6 +100,7 @@
       "type": "row"
     },
     {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "thresholds" },
@@ -102,7 +113,7 @@
       "id": 5,
       "options": { "orientation": "horizontal", "showValue": "auto", "stacking": "normal" },
       "targets": [
-        { "expr": "aimilivpn_up", "legendFormat": "{{component}}", "refId": "A" }
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "aimilivpn_up", "legendFormat": "{{component}}", "refId": "A" }
       ],
       "title": "Component Liveness (1=UP, 0=DOWN)",
       "type": "bargauge"
@@ -116,6 +127,7 @@
       "type": "row"
     },
     {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "palette-classic" },
@@ -127,13 +139,14 @@
       "id": 6,
       "options": { "legend": { "placement": "bottom" }, "tooltip": { "mode": "multi" } },
       "targets": [
-        { "expr": "aimilivpn_proxy_latency_ms", "legendFormat": "Proxy Latency", "refId": "A" },
-        { "expr": "aimilivpn_active_node_latency_ms", "legendFormat": "Node Latency", "refId": "B" }
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "aimilivpn_proxy_latency_ms", "legendFormat": "Proxy Latency", "refId": "A" },
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "aimilivpn_active_node_latency_ms", "legendFormat": "Node Latency", "refId": "B" }
       ],
       "title": "Latency (ms)",
       "type": "timeseries"
     },
     {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "palette-classic" },
@@ -145,13 +158,14 @@
       "id": 7,
       "options": { "legend": { "placement": "bottom" }, "tooltip": { "mode": "multi" } },
       "targets": [
-        { "expr": "aimilivpn_process_resident_memory_bytes", "legendFormat": "RSS Memory", "refId": "A" },
-        { "expr": "aimilivpn_process_virtual_memory_bytes", "legendFormat": "Virtual Memory", "refId": "B" }
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "aimilivpn_process_resident_memory_bytes", "legendFormat": "RSS Memory", "refId": "A" },
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "aimilivpn_process_virtual_memory_bytes", "legendFormat": "Virtual Memory", "refId": "B" }
       ],
       "title": "Process Memory",
       "type": "timeseries"
     },
     {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "palette-classic" },
@@ -163,7 +177,7 @@
       "id": 8,
       "options": { "legend": { "placement": "bottom" }, "tooltip": { "mode": "multi" } },
       "targets": [
-        { "expr": "rate(aimilivpn_process_cpu_seconds_total[1m])", "legendFormat": "CPU Usage (rate)", "refId": "A" }
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "rate(aimilivpn_process_cpu_seconds_total[1m])", "legendFormat": "CPU Usage (rate)", "refId": "A" }
       ],
       "title": "CPU Usage",
       "type": "timeseries"
@@ -177,6 +191,7 @@
       "type": "row"
     },
     {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "thresholds" },
@@ -187,44 +202,48 @@
       "gridPos": { "h": 6, "w": 4, "x": 0, "y": 40 },
       "id": 9,
       "options": { "colorMode": "value", "graphMode": "area", "textMode": "auto" },
-      "targets": [{ "expr": "aimilivpn_nodes_total", "refId": "A" }],
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "aimilivpn_nodes_total", "refId": "A" }],
       "title": "Total Nodes",
       "type": "stat"
     },
     {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" } } },
       "gridPos": { "h": 6, "w": 4, "x": 4, "y": 40 },
       "id": 10,
       "options": { "displayLabels": ["name", "percent"], "legend": { "placement": "right" }, "pieType": "pie" },
-      "targets": [{ "expr": "aimilivpn_nodes_by_status", "legendFormat": "{{status}}", "refId": "A" }],
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "aimilivpn_nodes_by_status", "legendFormat": "{{status}}", "refId": "A" }],
       "title": "By Probe Status",
       "type": "piechart"
     },
     {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" } } },
       "gridPos": { "h": 6, "w": 4, "x": 8, "y": 40 },
       "id": 11,
       "options": { "displayLabels": ["name", "percent"], "legend": { "placement": "right" }, "pieType": "pie" },
-      "targets": [{ "expr": "aimilivpn_nodes_by_type", "legendFormat": "{{type}}", "refId": "A" }],
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "aimilivpn_nodes_by_type", "legendFormat": "{{type}}", "refId": "A" }],
       "title": "By IP Type",
       "type": "piechart"
     },
     {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "thresholds" },
           "mappings": [],
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "orange", "value": null }, { "color": "red", "value": 5 }] }
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 5 }] }
         }
       },
       "gridPos": { "h": 6, "w": 4, "x": 12, "y": 40 },
       "id": 12,
       "options": { "colorMode": "value", "graphMode": "area", "textMode": "auto" },
-      "targets": [{ "expr": "aimilivpn_blacklisted_nodes", "refId": "A" }],
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "aimilivpn_blacklisted_nodes", "refId": "A" }],
       "title": "Blacklisted",
       "type": "stat"
     },
     {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "thresholds" },
@@ -235,7 +254,7 @@
       "gridPos": { "h": 6, "w": 8, "x": 16, "y": 40 },
       "id": 13,
       "options": { "colorMode": "value", "graphMode": "area", "textMode": "auto" },
-      "targets": [{ "expr": "aimilivpn_active_node_score", "refId": "A" }],
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "aimilivpn_active_node_score", "refId": "A" }],
       "title": "Active Node Score",
       "type": "stat"
     }
@@ -243,18 +262,6 @@
   "refresh": "30s",
   "schemaVersion": 39,
   "tags": ["aimilivpn", "vpn", "proxy"],
-  "templating": {
-    "list": [
-      {
-        "current": { "text": "Prometheus", "value": "Prometheus" },
-        "hide": 0,
-        "label": "Datasource",
-        "name": "DS_PROMETHEUS",
-        "query": "prometheus",
-        "type": "datasource"
-      }
-    ]
-  },
   "time": { "from": "now-6h", "to": "now" },
   "timepicker": {},
   "timezone": "browser",

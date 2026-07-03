@@ -1,5 +1,6 @@
 # AimiliVPN 监控栈 (Prometheus + Grafana)
 # 使用方式:
+#   cd /path/to/aimili-vpngate
 #   docker compose -f docker-compose.yml -f contrib/docker-compose.monitor.yml up -d
 # Grafana: http://localhost:3000 (admin/admin)
 # Dashboard 已预配置，数据源自动对接
@@ -19,11 +20,8 @@ services:
       - "--storage.tsdb.retention.time=15d"
       - "--web.listen-address=:9091"
       - "--web.enable-lifecycle"
-    deploy:
-      resources:
-        limits:
-          cpus: "1"
-          memory: 256M
+    cpus: "1"
+    mem_limit: 256m
 
   grafana:
     image: grafana/grafana:latest
@@ -33,18 +31,14 @@ services:
     environment:
       - GF_SECURITY_ADMIN_USER=admin
       - GF_SECURITY_ADMIN_PASSWORD=admin
-      - GF_INSTALL_PLUGINS=
       - GF_AUTH_ANONYMOUS_ENABLED=false
     volumes:
       - grafana_data:/var/lib/grafana
       - ./contrib/grafana/dashboard.json:/etc/grafana/provisioning/dashboards/aimilivpn.json:ro
       - ./contrib/grafana/datasource.yml:/etc/grafana/provisioning/datasources/datasource.yml:ro
       - ./contrib/grafana/dashboard-provider.yml:/etc/grafana/provisioning/dashboards/provider.yml:ro
-    deploy:
-      resources:
-        limits:
-          cpus: "1"
-          memory: 256M
+    cpus: "1"
+    mem_limit: 256m
 
 volumes:
   prometheus_data:

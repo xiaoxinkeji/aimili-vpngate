@@ -7,4 +7,5 @@ Dockerfile
 .dockerignore
 docker-compose.yml
 Makefile
+contrib/
 vpngate_data/
