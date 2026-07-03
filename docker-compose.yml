@@ -1,0 +1,23 @@
+services:
+  aimilivpn:
+    build: .
+    container_name: aimilivpn
+    restart: unless-stopped
+    network_mode: host
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    environment:
+      - VPNGATE_DATA_DIR=/opt/aimilivpn/vpngate_data
+      - LOCAL_PROXY_HOST=127.0.0.1
+      - LOCAL_PROXY_PORT=7928
+      - UI_HOST=::
+      - UI_PORT=8787
+    volumes:
+      - ./vpngate_data:/opt/aimilivpn/vpngate_data
+    sysctls:
+      - net.ipv4.conf.all.rp_filter=2
+      - net.ipv4.conf.default.rp_filter=2
+      - net.ipv4.ip_forward=1

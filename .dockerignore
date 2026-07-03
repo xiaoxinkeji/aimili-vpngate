@@ -1,0 +1,9 @@
+.git
+.gitignore
+*.md
+LICENSE
+install.sh
+Dockerfile
+.dockerignore
+docker-compose.yml
+vpngate_data/
