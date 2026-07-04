@@ -5730,6 +5730,14 @@ class Tee:
 
 def main() -> None:
     ensure_dirs()
+
+    # 预检 TUN 设备 (二进制部署模式下必需)
+    if not Path("/dev/net/tun").exists():
+        print("[错误] /dev/net/tun 不存在，请确保 tun 内核模块已加载", flush=True)
+        print("  尝试: modprobe tun  或  lsmod | grep tun  检查模块状态", flush=True)
+        print("  如使用 Docker: docker run --device=/dev/net/tun", flush=True)
+        sys.exit(1)
+
     kill_existing_openvpn_processes()
     
     log_file = DATA_DIR / "vpngate.log"

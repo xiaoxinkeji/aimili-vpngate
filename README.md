@@ -48,9 +48,15 @@ bash <(curl -Ls https://raw.githubusercontent.com/baoweise-bot/aimili-vpngate/ma
 支持通过 Docker / Docker Compose 一键部署，无需手动安装系统依赖。镜像自动构建多架构 (`amd64` / `arm64`)，内置健康检查和优雅关闭。
 
 **前置条件：** 宿主机需加载 tun 内核模块：
+
 ```bash
-# 检查并加载 tun 模块
-lsmod | grep tun || modprobe tun
+# 检查 TUN 是否已就绪
+[ -c /dev/net/tun ] && echo "TUN 已就绪" || echo "需要加载 tun 模块"
+
+# 加载 tun 模块 (任选一种方式)
+modprobe tun                # 标准方式
+insmod /lib/modules/tun.ko  # modprobe 不可用时
+# 如果是 LXC/OpenVZ 虚拟化，需在宿主机开启 TUN 设备权限
 ```
 
 **docker-compose 部署（推荐）：**
@@ -113,7 +119,7 @@ docker inspect --format='{{.State.Health.Status}}' aimilivpn
 
 自 v1.0.0 起提供预编译的单一二进制文件，内置 Python 解释器，**无需安装 Python、Docker 或任何依赖**。
 
-**前置条件：** 需要安装系统级依赖 `openvpn` 和 `iptables`。
+**前置条件：** 需要安装系统级依赖 `openvpn` 和 `iptables`，并加载 tun 模块。
 
 ```bash
 # Debian/Ubuntu
@@ -122,8 +128,10 @@ apt-get install -y openvpn iptables iproute2 curl
 # CentOS/RHEL
 yum install -y openvpn iptables iproute curl
 
-# 加载 tun 内核模块
-modprobe tun
+# 加载 tun 内核模块 (任选一种)
+modprobe tun                              # 标准方式
+[ -c /dev/net/tun ] || echo "TUN 未加载"   # 检查是否已就绪
+# 如果 modprobe 不可用，检查宿主机内核配置或联系 VPS 提供商
 ```
 
 **下载并运行：**
