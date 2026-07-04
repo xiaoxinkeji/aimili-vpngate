@@ -5,6 +5,7 @@ import json
 import os
 import platform
 import re
+import shutil
 import sys
 import tempfile
 import threading
@@ -119,10 +120,10 @@ def do_update() -> bool:
 
             # 备份当前二进制
             backup = current_bin.with_suffix(current_bin.suffix + ".bak")
-            current_bin.rename(backup)
+            shutil.move(str(current_bin), str(backup))
 
             # 替换
-            new_bin.rename(current_bin)
+            shutil.move(str(new_bin), str(current_bin))
             current_bin.chmod(0o755)
 
             print(f"[更新] 已更新到 {info['latest']}，备份保留在 {backup}", flush=True)
