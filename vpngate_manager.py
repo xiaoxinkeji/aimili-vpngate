@@ -5813,9 +5813,43 @@ def main() -> None:
     ui_cfg = load_ui_config()
     ui_host = ui_cfg.get("host", UI_HOST)
     ui_port = bounded_int(ui_cfg.get("port"), UI_PORT, 1, 65535)
-    
-    print(f"UI: http://{ui_host}:{ui_port}/", flush=True)
-    print(f"Proxy: http://{LOCAL_PROXY_HOST}:{LOCAL_PROXY_PORT}", flush=True)
+    secret_path = ui_cfg.get("secret_path", "EJsW2EeBo9lY")
+    username = ui_cfg.get("username", "admin")
+    password = ui_cfg.get("password", "")
+
+    # 读取服务器 IP
+    server_ip = "您的服务器IP"
+    try:
+        ip_file = DATA_DIR / "public_ip.txt"
+        if ip_file.exists():
+            server_ip = ip_file.read_text(encoding="utf-8").strip()
+    except Exception:
+        pass
+
+    # 格式化 Web UI 地址
+    if ui_host in ("::", "0.0.0.0", ""):
+        display_host = server_ip
+    elif ":" in ui_host:
+        display_host = f"[{ui_host}]"
+    else:
+        display_host = ui_host
+
+    print("", flush=True)
+    print("=" * 56, flush=True)
+    print("  AimiliVPN 启动成功", flush=True)
+    print("=" * 56, flush=True)
+    print(f"  Web 管理后台:  http://{display_host}:{ui_port}/{secret_path}/", flush=True)
+    if password:
+        print(f"  管理账号:      {username}", flush=True)
+        print(f"  管理密码:      {password}", flush=True)
+    else:
+        print(f"  管理账号:      {username} (无需密码)", flush=True)
+    print(f"  代理地址:      http://{LOCAL_PROXY_HOST}:{LOCAL_PROXY_PORT}", flush=True)
+    if os.environ.get("METRICS_ENABLED", "true") == "true":
+        print(f"  监控指标:      http://{display_host}:{os.environ.get('METRICS_PORT', '9798')}/metrics", flush=True)
+    print("=" * 56, flush=True)
+    print("", flush=True)
+
     DualStackHTTPServer((ui_host, ui_port), Handler).serve_forever()
 
 if __name__ == "__main__":
