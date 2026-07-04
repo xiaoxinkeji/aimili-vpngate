@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 ROOT_DIR = Path(__file__).resolve().parent
-DATA_DIR = Path(os.environ["VPNGATE_DATA_DIR"]).resolve() if os.environ.get("VPNGATE_DATA_DIR") else ROOT_DIR / "vpngate_data"
+DATA_DIR = Path(os.environ["VPNGATE_DATA_DIR"].strip()).resolve() if os.environ.get("VPNGATE_DATA_DIR", "").strip() else ROOT_DIR / "vpngate_data"
 IP_CACHE_FILE = DATA_DIR / "ip_cache.json"
 
 ip_cache_lock = threading.RLock()

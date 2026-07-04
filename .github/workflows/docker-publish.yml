@@ -55,7 +55,7 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
             IMAGE_VERSION=${{ github.ref_name }}
-            BUILD_DATE=${{ github.event.head_commit.timestamp || github.event.repository.updated_at }}
+            BUILD_DATE=${{ github.event.head_commit && github.event.head_commit.timestamp || github.event.repository.updated_at }}
             GIT_COMMIT=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

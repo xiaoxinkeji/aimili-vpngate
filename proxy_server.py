@@ -405,9 +405,11 @@ def http_client(client: socket.socket, first_byte: bytes) -> None:
             upstream.close()
 
 def proxy_client(client: socket.socket, address: tuple[str, int]) -> None:
+    entered = False
     try:
         client.settimeout(30)
         first = recv_exact(client, 1)
+        entered = True
         if first == b"\x05":
             socks5_client(client, first)
         else:
@@ -416,10 +418,11 @@ def proxy_client(client: socket.socket, address: tuple[str, int]) -> None:
         err_msg = str(e)
         if "[错误代码" in err_msg:
             print(f"[代理客户端连接失败] 客户端 {address} 遭遇系统性阻碍: {err_msg}", flush=True)
-        try:
-            client.close()
-        except OSError:
-            pass
+        if not entered:
+            try:
+                client.close()
+            except OSError:
+                pass
 
 def start_proxy_server(host: str, port: int) -> None:
     is_ipv6 = ":" in host or host == ""
