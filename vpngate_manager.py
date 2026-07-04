@@ -79,6 +79,12 @@ import vpn_utils
 import proxy_server
 import self_update
 
+try:
+    import publicvpnlist_scraper
+    _HAS_PVL = True
+except ImportError:
+    _HAS_PVL = False
+
 def env_int(name: str, default: int, min_value: int | None = None, max_value: int | None = None) -> int:
     raw = os.environ.get(name)
     try:
@@ -826,6 +832,24 @@ def fetch_candidates() -> list[dict[str, Any]]:
     )
     log_to_json("INFO", "Main", f"成功获取官方 API 节点，共 {len(candidates)} 个候选节点")
     return candidates
+
+
+def fetch_pvl_candidates() -> list[dict[str, Any]]:
+    """从 publicvpnlist.com 抓取节点，返回标准节点格式列表"""
+    if not _HAS_PVL:
+        print("[PVL] publicvpnlist_scraper 模块未加载，跳过", flush=True)
+        return []
+
+    print("[PVL] 开始从 publicvpnlist.com 抓取节点...", flush=True)
+    try:
+        pvl_nodes = publicvpnlist_scraper.fetch_pvl_nodes()
+    except Exception as e:
+        print(f"[PVL] 抓取失败: {e}", flush=True)
+        return []
+
+    if pvl_nodes:
+        log_to_json("INFO", "PVL", f"成功获取 publicvpnlist.com 节点，共 {len(pvl_nodes)} 个候选节点")
+    return pvl_nodes
 
 def cached_nodes() -> list[dict[str, Any]]:
     return read_nodes()
@@ -1763,6 +1787,18 @@ def maintain_valid_nodes(force: bool = False) -> str:
                 diag_msg = f"[错误代码 {err_code}] 获取节点失败: {exc} | 诊断结果: {raw_diag}"
             set_state(last_fetch_at=time.time(), last_fetch_status="error", last_fetch_message=diag_msg)
             candidates = []
+
+        # 从 publicvpnlist.com 补充节点
+        try:
+            pvl_candidates = fetch_pvl_candidates()
+            if pvl_candidates:
+                pvl_ids = {c["id"] for c in candidates}
+                for pn in pvl_candidates:
+                    if pn["id"] not in pvl_ids:
+                        candidates.append(pn)
+                        pvl_ids.add(pn["id"])
+        except Exception as exc:
+            print(f"[PVL] 补充节点失败: {exc}", flush=True)
 
         if not candidates:
             return "没有拉取到新节点"

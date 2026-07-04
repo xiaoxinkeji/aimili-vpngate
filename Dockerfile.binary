@@ -14,7 +14,7 @@ RUN apt-get update -q && \
 RUN pip3 install --break-system-packages pyinstaller
 
 WORKDIR /build
-COPY vpngate_manager.py proxy_server.py vpn_utils.py self_update.py ./
+COPY vpngate_manager.py proxy_server.py vpn_utils.py self_update.py publicvpnlist_scraper.py ./
 
 ARG IMAGE_VERSION=dev
 ARG BUILD_DATE=unknown
@@ -29,8 +29,10 @@ RUN pyinstaller --onefile --name aimilivpn --clean --noconfirm \
     --add-data "vpn_utils.py:." \
     --add-data "proxy_server.py:." \
     --add-data "self_update.py:." \
+    --add-data "publicvpnlist_scraper.py:." \
     --add-data "_version.py:." \
     --hidden-import http.server \
+    --hidden-import html.parser \
     vpngate_manager.py \
     && echo "${IMAGE_VERSION} (${GIT_COMMIT}) built ${BUILD_DATE}" > dist/version.txt
 
