@@ -147,6 +147,12 @@ server_start_time = time.time()
 def ensure_dirs() -> None:
     DATA_DIR.mkdir(exist_ok=True, parents=True)
     CONFIG_DIR.mkdir(exist_ok=True, parents=True)
+    # 清理上次崩溃可能残留的 .tmp 文件
+    for tmp_file in DATA_DIR.rglob("*.*.tmp"):
+        try:
+            tmp_file.unlink()
+        except OSError:
+            pass
     if not AUTH_FILE.exists():
         AUTH_FILE.write_text(f"{OPENVPN_AUTH_USER}\n{OPENVPN_AUTH_PASS}\n", encoding="utf-8")
         try:
@@ -3573,7 +3579,7 @@ INDEX_HTML = r"""<!doctype html>
 <script>
 let nodes=[], state={}, testingNodeIds = new Set();
 let currentPage = 1;
-const pageSize = 99999;
+const pageSize = 100;
 let currentPageNodes = [];
 
 const $=id=>document.getElementById(id);
@@ -4935,276 +4941,13 @@ def check_proxy_health() -> dict[str, Any]:
         if result:
             return result
             
-        # 此时外网测试失败，检测本地代理端口是否依然能连通。若仍能连通，直接抛出出口测试失败，不调用占用诊断
-        port_still_listening = False
-        test_sock = None
-        try:
-            test_sock = socket.socket(af, socket.SOCK_STREAM)
-            test_sock.settimeout(1.0)
-            connect_host = LOCAL_PROXY_HOST
-            if connect_host in ("::", "0.0.0.0", ""):
-                connect_host = "::1" if is_ipv6 else "127.0.0.1"
-            try:
-                test_sock.connect((connect_host, LOCAL_PROXY_PORT))
-                port_still_listening = True
-            except Exception:
-                if connect_host == "::1":
-                    test_sock.close()
-                    test_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                    test_sock.settimeout(1.0)
-                    test_sock.connect(("127.0.0.1", LOCAL_PROXY_PORT))
-                    port_still_listening = True
-        except Exception:
-            pass
-        finally:
-            if test_sock is not None:
-                try:
-                    test_sock.close()
-                except Exception:
-                    pass
-
-        if not port_still_listening:
-            diag = vpn_utils.diagnose_local_obstructions(LOCAL_PROXY_PORT, host=LOCAL_PROXY_HOST)
-            if diag:
-                return {"ok": False, "error": f"出口连接测试失败 | 本机诊断结果: {diag[1]}"}
-            
-        return {"ok": False, "error": "出口连接测试失败 (ip.sb 和 api.ipify.org 均无法连通，可能是节点已失效或 VPS 防火墙限制了 UDP/TCP 出站端口)"}
-    except Exception as e:
-        return {"ok": False, "error": f"出口连接测试异常: {e}"}
-
-def background_proxy_checker() -> None:
-    global last_checker_heartbeat, is_connecting
-    time.sleep(30)
-    while True:
-        last_checker_heartbeat = time.time()
-        try:
-            if is_connecting:
-                time.sleep(5)
-                continue
-
-            res = check_proxy_health()
-            if res["ok"]:
-                set_state(
-                    proxy_ok=True,
-                    proxy_ip=res["ip"],
-                    proxy_latency_ms=res["latency_ms"],
-                    proxy_error=""
-                )
-                log_to_json("INFO", "Proxy", f"代理可用，IP: {res['ip']}, 延迟: {res['latency_ms']} ms")
-            else:
-                error_msg = res.get("error", "未知错误")
-                if active_openvpn_node_id:
-                    print(f"[警告] {LOCAL_PROXY_PORT} 端口本地代理当前不可用！原因: {error_msg}", flush=True)
-                    log_to_json("WARNING", "Proxy", f"代理不可用: {error_msg}")
-                set_state(
-                    proxy_ok=False,
-                    proxy_ip="-",
-                    proxy_latency_ms=0,
-                    proxy_error=error_msg
-                )
-
-                # If we intended to have an active VPN node but proxy failed, trigger auto-switch
-                if active_openvpn_node_id:
-                    ui_cfg = load_ui_config()
-                    routing_mode = ui_cfg.get("routing_mode", "auto")
-                    if routing_mode != "fixed_ip":
-                        with lock:
-                            nodes = read_nodes()
-                            active_node = next((n for n in nodes if n.get("id") == active_openvpn_node_id), None)
-                            if active_node:
-                                mark_blacklisted(active_node, f"代理连通性检测失败: {error_msg}")
-                                active_node["probe_status"] = "unavailable"
-                                write_json(NODES_FILE, nodes)
-                        auto_switch_node()
-                    else:
-                        print(f"[代理守护线程] 固定 IP 模式下代理不可用，正在尝试重启连接同一节点: {active_openvpn_node_id}", flush=True)
-                        is_connecting = False
-                        try:
-                            connect_node(active_openvpn_node_id)
-                        except Exception as e:
-                            print(f"[代理守护线程] 重启固定节点失败: {e}", flush=True)
-        except Exception as e:
-            print(f"[错误] 代理后台检测发生异常: {e}", flush=True)
-            log_to_json("ERROR", "Proxy", f"检测守护线程发生异常: {e}")
-        time.sleep(30)
-
-def active_node_pinger() -> None:
-    global last_pinger_heartbeat
-    while True:
-        last_pinger_heartbeat = time.time()
-        try:
-            if active_openvpn_running() and active_openvpn_node_id:
-                nodes = read_nodes()
-                node = next((n for n in nodes if n.get("id") == active_openvpn_node_id), None)
-                if node:
-                    ip = node.get("ip") or node.get("remote_host")
-                    port = parse_int(node.get("remote_port"))
-                    fallback = parse_int(node.get("ping"))
-                    if ip:
-                        latency = vpn_utils.ping_latency_ms(ip, port, fallback)
-                        if latency > 0:
-                            set_state(active_node_latency=f"{latency} ms")
-                        else:
-                            set_state(active_node_latency="检测超时")
-                    else:
-                        set_state(active_node_latency="检测超时")
-                else:
-                    set_state(active_node_latency="检测超时")
-            elif is_connecting:
-                set_state(active_node_latency="测试中...")
-            else:
-                set_state(active_node_latency="无活动连接")
-        except Exception as e:
-            print(f"[ERROR] active_node_pinger error: {e}", flush=True)
-        time.sleep(10)
-
-
-class Handler(BaseHTTPRequestHandler):
-    def get_secret_path(self) -> str:
-        ui_cfg = load_ui_config()
-        return ui_cfg.get("secret_path", "EJsW2EeBo9lY")
-
-    def is_authorized(self) -> bool:
-        ui_cfg = load_ui_config()
-        pwd = ui_cfg.get("password")
-        if not pwd:
-            print("[Auth] 管理后台密码为空，已拒绝访问。请检查 ui_auth.json。", flush=True)
-            return False
-        
-        cookie_header = self.headers.get("Cookie", "")
-        cookies = {}
-        if cookie_header:
-            for item in cookie_header.split(";"):
-                item = item.strip()
-                if "=" in item:
-                    k, v = item.split("=", 1)
-                    cookies[k.strip()] = v.strip()
-        
-        session_token = cookies.get("session")
-        if not session_token:
-            return False
-            
-        with lock:
-            exp_time = active_sessions.get(session_token)
-            if exp_time is not None and exp_time > time.time():
-                return True
-            # 清理过期 session
-            if exp_time is not None:
-                active_sessions.pop(session_token, None)
-        return False
-
-    def validate_path(self) -> str:
-        secret_path = self.get_secret_path()
-        request_path = urllib.parse.urlsplit(self.path).path
-        if not secret_path:
-            return request_path
-        if request_path == f"/{secret_path}":
-            self.send_response(HTTPStatus.FOUND)
-            self.send_header("Location", f"/{secret_path}/")
-            self.end_headers()
-            return ""
-        prefix = f"/{secret_path}/"
-        if request_path.startswith(prefix):
-            return "/" + request_path[len(prefix):]
-        self.send_response(HTTPStatus.NOT_FOUND)
-        self.end_headers()
-        return ""
-
-    def log_message(self, format: str, *args: Any) -> None:
-        print(f"[{self.log_date_time_string()}] {format % args}", flush=True)
-
-    def send_bytes(self, body: bytes, content_type: str, status: HTTPStatus = HTTPStatus.OK) -> None:
-        self.send_response(status)
-        self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
-        self.end_headers()
-        self.wfile.write(body)
-
-    def send_json(self, data: Any, status: HTTPStatus = HTTPStatus.OK) -> None:
-        self.send_bytes(json.dumps(data, ensure_ascii=False).encode("utf-8"), "application/json; charset=utf-8", status)
-
-    def read_request_body(self, max_bytes: int = 65536) -> bytes:
-        length = parse_int(self.headers.get("Content-Length"))
-        if length < 0:
-            raise ValueError("Content-Length 无效")
-        if length > max_bytes:
-            raise ValueError(f"请求体过大，最大允许 {max_bytes} 字节")
-        return self.rfile.read(length) if length > 0 else b""
-
-    def read_json_body(self, max_bytes: int = 65536) -> dict[str, Any]:
-        body = self.read_request_body(max_bytes)
-        if not body:
-            return {}
-        data = json.loads(body.decode("utf-8"))
-        if not isinstance(data, dict):
-            raise ValueError("请求 JSON 必须是对象")
-        return data
-
-    def do_GET(self) -> None:
-        effective_path = self.validate_path()
-        if effective_path == "": return
-        
-        if not self.is_authorized():
-            if effective_path in ("/", "/index.html"):
-                self.send_bytes(LOGIN_HTML.encode("utf-8"), "text/html; charset=utf-8")
-                return
-            else:
-                self.send_json({"error": "Unauthorized"}, HTTPStatus.UNAUTHORIZED)
-                return
-                
-        if effective_path in ("/", "/index.html"):
-            self.send_bytes(INDEX_HTML.encode("utf-8"), "text/html; charset=utf-8")
-        elif effective_path == "/api/nodes":
-            global last_active_ping_time, last_active_latency, active_openvpn_node_id
-            nodes = read_nodes()
-            active_node = next((n for n in nodes if active_openvpn_node_id and n.get("id") == active_openvpn_node_id), None)
-            for n in nodes:
-                n["active"] = (active_openvpn_node_id and n.get("id") == active_openvpn_node_id)
-            if active_node:
-                ip = active_node.get("ip") or active_node.get("remote_host")
-                if ip:
-                    now = time.time()
-                    if now - last_active_ping_time > 15.0:
-                        last_active_ping_time = now
-                        def bg_ping(ip_addr: str, port: int, fallback: int) -> None:
-                            global last_active_latency
-                            try:
-                                latency = vpn_utils.ping_latency_ms(ip_addr, port, fallback)
-                                if latency > 0:
-                                    last_active_latency = latency
-                            except Exception:
-                                pass
-                        threading.Thread(
-                            target=bg_ping, 
-                            args=(ip, parse_int(active_node.get("remote_port")), parse_int(active_node.get("ping"))),
-                            daemon=True
-                        ).start()
-                    if last_active_latency > 0:
-                        active_node["latency_ms"] = last_active_latency
-            stripped_nodes = []
-            for n in nodes:
-                stripped = n.copy()
-                if "config_text" in stripped:
-                    del stripped["config_text"]
-                stripped_nodes.append(stripped)
-            self.send_json({"nodes": stripped_nodes, "state": get_state()})
-        elif effective_path.startswith("/configs/"):
-            filename = urllib.parse.unquote(effective_path.removeprefix("/configs/"))
-            with lock:
-                nodes = read_nodes()
-                node = next((n for n in nodes if Path(n.get("config_file", "")).name == filename), None)
-            if node and node.get("config_text"):
-                self.send_bytes(node["config_text"].encode("utf-8"), "application/x-openvpn-profile")
-            else:
-                self.send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
-        elif effective_path == "/api/gateway_status":
-            web_ui_status = {
-                "name": "Web 管理服务",
-                "status": "running",
-                "details": f"监听地址: {load_ui_config().get('host', UI_HOST)}:{load_ui_config().get('port', UI_PORT)}",
-                "error": ""
-            }
+        # 此时外网测试失败，代理端口在第一步已确认监听，直接诊断
+        diag = vpn_utils.diagnose_local_obstructions(LOCAL_PROXY_PORT, host=LOCAL_PROXY_HOST)
+        diag_msg = diag[1] if diag else "外网连通性测试失败"
+        return {
+            "ok": False,
+            "error": f"外网连通性测试失败 ({diag_msg})"
+        }
             proxy_ok = False
             proxy_err = ""
             is_ipv6 = ":" in LOCAL_PROXY_HOST

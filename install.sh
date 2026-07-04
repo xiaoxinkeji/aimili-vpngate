@@ -1149,11 +1149,26 @@ UI_PORT=8787
 PROXY_PORT=7928
 AUTH_FILE="${INSTALL_DIR}/vpngate_data/ui_auth.json"
 if [ -f "$AUTH_FILE" ]; then
-    SECRET_PATH=$(python3 -c "import json; print(json.load(open('$AUTH_FILE')).get('secret_path', 'EJsW2EeBo9lY'))" 2>/dev/null || echo "EJsW2EeBo9lY")
-    USERNAME=$(python3 -c "import json; print(json.load(open('$AUTH_FILE')).get('username', '未配置'))" 2>/dev/null || echo "未配置")
-    PASSWORD=$(python3 -c "import json; print(json.load(open('$AUTH_FILE')).get('password', '未配置'))" 2>/dev/null || echo "未配置")
-    UI_PORT=$(python3 -c "import json; print(json.load(open('$AUTH_FILE')).get('port', 8787))" 2>/dev/null || echo "8787")
-    PROXY_PORT=$(python3 -c "import json; print(json.load(open('$AUTH_FILE')).get('proxy_port', 7928))" 2>/dev/null || echo "7928")
+    SECRET_PATH=$(AUTH_FILE="$AUTH_FILE" python3 -c "
+import json, os
+print(json.load(open(os.environ['AUTH_FILE'])).get('secret_path', 'EJsW2EeBo9lY'))
+" 2>/dev/null || echo "EJsW2EeBo9lY")
+    USERNAME=$(AUTH_FILE="$AUTH_FILE" python3 -c "
+import json, os
+print(json.load(open(os.environ['AUTH_FILE'])).get('username', '未配置'))
+" 2>/dev/null || echo "未配置")
+    PASSWORD=$(AUTH_FILE="$AUTH_FILE" python3 -c "
+import json, os
+print(json.load(open(os.environ['AUTH_FILE'])).get('password', '未配置'))
+" 2>/dev/null || echo "未配置")
+    UI_PORT=$(AUTH_FILE="$AUTH_FILE" python3 -c "
+import json, os
+print(json.load(open(os.environ['AUTH_FILE'])).get('port', 8787))
+" 2>/dev/null || echo "8787")
+    PROXY_PORT=$(AUTH_FILE="$AUTH_FILE" python3 -c "
+import json, os
+print(json.load(open(os.environ['AUTH_FILE'])).get('proxy_port', 7928))
+" 2>/dev/null || echo "7928")
 fi
 
 # Get VPS public IP
