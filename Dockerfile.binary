@@ -14,15 +14,22 @@ RUN apt-get update -q && \
 RUN pip3 install --break-system-packages pyinstaller
 
 WORKDIR /build
-COPY vpngate_manager.py proxy_server.py vpn_utils.py ./
+COPY vpngate_manager.py proxy_server.py vpn_utils.py self_update.py ./
 
 ARG IMAGE_VERSION=dev
 ARG BUILD_DATE=unknown
 ARG GIT_COMMIT=unknown
 
+# 生成版本信息模块 (编译进二进制)
+RUN echo "VERSION = '${IMAGE_VERSION}'" > _version.py && \
+    echo "GIT_COMMIT = '${GIT_COMMIT}'" >> _version.py && \
+    echo "BUILD_DATE = '${BUILD_DATE}'" >> _version.py
+
 RUN pyinstaller --onefile --name aimilivpn --clean --noconfirm \
     --add-data "vpn_utils.py:." \
     --add-data "proxy_server.py:." \
+    --add-data "self_update.py:." \
+    --add-data "_version.py:." \
     --hidden-import http.server \
     vpngate_manager.py \
     && echo "${IMAGE_VERSION} (${GIT_COMMIT}) built ${BUILD_DATE}" > dist/version.txt

@@ -77,6 +77,7 @@ class DualStackHTTPServer(ThreadingHTTPServer):
 
 import vpn_utils
 import proxy_server
+import self_update
 
 def env_int(name: str, default: int, min_value: int | None = None, max_value: int | None = None) -> int:
     raw = os.environ.get(name)
@@ -5187,6 +5188,15 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_bytes(node["config_text"].encode("utf-8"), "application/x-openvpn-profile")
             else:
                 self.send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
+        elif effective_path == "/api/version":
+            info = self_update.check_update()
+            self.send_json({
+                "version": self_update.VERSION,
+                "git_commit": self_update.GIT_COMMIT,
+                "build_date": self_update.BUILD_DATE,
+                "latest": info.get("latest"),
+                "update_url": info.get("url"),
+            })
         elif effective_path == "/api/gateway_status":
             web_ui_status = {
                 "name": "Web 管理服务",
@@ -5850,7 +5860,30 @@ def main() -> None:
     print("=" * 56, flush=True)
     print("", flush=True)
 
+    # 后台检查更新 (非阻塞)
+    threading.Thread(target=self_update.start_update_checker, daemon=True).start()
+
     DualStackHTTPServer((ui_host, ui_port), Handler).serve_forever()
 
 if __name__ == "__main__":
+    if len(sys.argv) > 1:
+        if sys.argv[1] == "--version" or sys.argv[1] == "-V":
+            print(f"AimiliVPN {self_update.VERSION} ({self_update.GIT_COMMIT})")
+            print(f"构建时间: {self_update.BUILD_DATE}")
+            sys.exit(0)
+        elif sys.argv[1] == "--update":
+            success = self_update.do_update()
+            sys.exit(0 if success else 1)
+        elif sys.argv[1] == "--check-update":
+            info = self_update.check_update()
+            if info["latest"]:
+                print(f"新版本: {info['latest']}")
+                print(f"下载地址: {info['url']}")
+            else:
+                print(f"当前已是最新版本 ({self_update.VERSION})")
+            sys.exit(0)
+        else:
+            print(f"用法: {sys.argv[0]} [--version | --update | --check-update]")
+            sys.exit(1)
+
     main()
