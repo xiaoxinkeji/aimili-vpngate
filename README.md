@@ -175,6 +175,15 @@ sudo VPNGATE_DATA_DIR=/var/lib/aimilivpn ./aimilivpn
 
 > 💡 **提示**：二进制文件 (`aimilivpn`) 已内置 `docker-stats` 功能，运行后在同一目录或 PATH 下创建名为 `docker-stats` 的符号链接即可使用状态查看命令，或直接执行 `python3 docker-stats.py`。
 
+**CLI 命令：**
+
+```bash
+./aimilivpn --version       # 查看版本信息
+./aimilivpn --show-auth     # 查看管理凭证
+./aimilivpn --check-update  # 检查是否有新版本
+./aimilivpn --update        # 自动下载并更新到最新版
+```
+
 #### 📊 Prometheus 监控
 
 容器内置 Prometheus 指标导出器，暴露进程、节点、连接、代理健康等指标。
@@ -252,6 +261,33 @@ docker compose --profile auto-update up -d
 ### 💡 快速使用指南 (小白必看)
 
 部署成功后，如何使用它进行科学上网？
+
+#### 如何查看管理凭证
+
+**Docker:**
+```bash
+# 查看启动日志（包含 Web 地址、账号、密码）
+docker logs aimilivpn 2>&1 | grep -A5 "启动成功"
+
+# 或直接读取容器内凭证文件
+docker exec aimilivpn cat /opt/aimilivpn/vpngate_data/CREDENTIALS.txt
+```
+
+**二进制:**
+```bash
+# 启动时控制台已打印凭证，也可随时查看
+./aimilivpn --show-auth
+
+# 或直接读取凭证文件
+cat vpngate_data/CREDENTIALS.txt
+```
+
+**云端 VPS（无法直接看控制台时）：**
+```bash
+# 首次 SSH 连接 VPS 后运行 docker logs 查看凭证
+ssh root@<VPS公网IP>
+docker logs aimilivpn 2>&1 | grep -A5 "启动成功"
+```
 
 #### 第一步：登录 Web 管理后台
 打开浏览器，访问部署完成时提示的专属后台地址（含安全后缀），即可进入精美的暗黑玻璃拟物风管理界面。

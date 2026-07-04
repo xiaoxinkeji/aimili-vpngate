@@ -5896,6 +5896,21 @@ def main() -> None:
     print("=" * 56, flush=True)
     print("", flush=True)
 
+    # 将凭证写入文件方便后续查看
+    cred_file = Path(config_dir) / "CREDENTIALS.txt"
+    try:
+        cred_file.write_text(
+            f"AimiliVPN 管理凭证\n"
+            f"==================\n"
+            f"Web 管理后台:  http://{display_host}:{ui_port}/{secret_path}/\n"
+            f"管理账号:      {username}\n"
+            f"管理密码:      {password if password else '(无密码)'}\n"
+            f"代理地址:      http://{LOCAL_PROXY_HOST}:{LOCAL_PROXY_PORT}\n",
+            encoding="utf-8",
+        )
+    except Exception:
+        pass
+
     # 后台检查更新 (非阻塞)
     threading.Thread(target=self_update.start_update_checker, daemon=True).start()
 
@@ -5918,8 +5933,21 @@ if __name__ == "__main__":
             else:
                 print(f"当前已是最新版本 ({self_update.VERSION})")
             sys.exit(0)
+        elif sys.argv[1] == "--show-auth":
+            cfg = load_ui_config()
+            username = cfg.get("username", "admin")
+            password = cfg.get("password", "")
+            secret_path = cfg.get("secret_path", "")
+            host = cfg.get("host", "0.0.0.0")
+            port = cfg.get("port", UI_PORT)
+            display_host = host if host != "0.0.0.0" else "127.0.0.1"
+            print(f"Web 管理后台:  http://{display_host}:{port}/{secret_path}/", flush=True)
+            print(f"管理账号:      {username}", flush=True)
+            print(f"管理密码:      {password if password else '(无密码)'}", flush=True)
+            print(f"\n凭证文件位置:  {Path(config_dir) / 'CREDENTIALS.txt'}", flush=True)
+            sys.exit(0)
         else:
-            print(f"用法: {sys.argv[0]} [--version | --update | --check-update]")
+            print(f"用法: {sys.argv[0]} [--version | --update | --check-update | --show-auth]")
             sys.exit(1)
 
     main()
