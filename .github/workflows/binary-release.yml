@@ -49,6 +49,7 @@ jobs:
           mkdir -p release
           cp output/aimilivpn release/
           cp output/version.txt release/ 2>/dev/null || true
+          chmod +x release/aimilivpn
           tar czf aimilivpn-linux-${{ matrix.arch }}.tar.gz -C release .
 
       - name: Upload artifact
@@ -76,6 +77,7 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           files: release/*.tar.gz
+          name: ${{ github.ref_name }}
           generate_release_notes: true
           draft: false
         env:

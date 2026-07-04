@@ -1,4 +1,4 @@
-FROM debian:bookworm-slim
+FROM debian:bookworm-slim AS builder
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -16,7 +16,6 @@ RUN pip3 install --break-system-packages pyinstaller
 WORKDIR /build
 COPY vpngate_manager.py proxy_server.py vpn_utils.py ./
 
-ARG TARGETARCH
 ARG IMAGE_VERSION=dev
 ARG BUILD_DATE=unknown
 ARG GIT_COMMIT=unknown
@@ -25,8 +24,9 @@ RUN pyinstaller --onefile --name aimilivpn --clean --noconfirm --strip \
     --add-data "vpn_utils.py:." \
     --add-data "proxy_server.py:." \
     --hidden-import http.server \
-    vpngate_manager.py
+    vpngate_manager.py \
+    && echo "${IMAGE_VERSION} (${GIT_COMMIT}) built ${BUILD_DATE}" > dist/version.txt
 
-RUN echo "${IMAGE_VERSION} (${GIT_COMMIT}) built ${BUILD_DATE}" > dist/version.txt
-
-CMD ["cp", "dist/aimilivpn", "/output/"]
+FROM scratch
+COPY --from=builder /build/dist/aimilivpn /aimilivpn
+COPY --from=builder /build/dist/version.txt /version.txt
