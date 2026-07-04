@@ -4923,9 +4923,16 @@ def check_proxy_health() -> dict[str, Any]:
                     lines = res.stdout.strip().splitlines()
                     if len(lines) >= 2:
                         ip = lines[0].strip()
-                        time_info = lines[1].strip().split()
-                        if len(time_info) == 2:
-                            total_time_str, http_code = time_info
+                        # 如果首行不是纯 IP，尝试从整个响应中用正则提取
+                        if not re.match(r'^[\d.:a-fA-F]+$', ip):
+                            m = re.search(r'\b(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}|[0-9a-fA-F:]+:[0-9a-fA-F:]+)\b', res.stdout)
+                            if m:
+                                ip = m.group(1)
+                            else:
+                                ip = ""
+                        time_info = lines[-1].strip().split()
+                        if len(time_info) >= 2:
+                            total_time_str, http_code = time_info[0], time_info[1]
                             if http_code == "200" and ip:
                                 latency_ms = int(float(total_time_str) * 1000)
                                 return {"ok": True, "ip": ip, "latency_ms": latency_ms}
@@ -4938,6 +4945,9 @@ def check_proxy_health() -> dict[str, Any]:
         if result:
             return result
         result = _curl_check_ip("http://api.ipify.org")
+        if result:
+            return result
+        result = _curl_check_ip("https://publicvpnlist.com/what-is-my-ip/")
         if result:
             return result
             
