@@ -109,6 +109,64 @@ docker inspect --format='{{.State.Health.Status}}' aimilivpn
 
 > ⚠️ **注意**：Docker 容器必须使用 `--network host` 和 `--cap-add=NET_ADMIN` 参数，因为需要操作 TUN 虚拟网卡和系统路由表。
 
+#### 📦 二进制部署 (无需 Python / Docker)
+
+自 v1.0.0 起提供预编译的单一二进制文件，内置 Python 解释器，**无需安装 Python、Docker 或任何依赖**。
+
+**前置条件：** 需要安装系统级依赖 `openvpn` 和 `iptables`。
+
+```bash
+# Debian/Ubuntu
+apt-get install -y openvpn iptables iproute2 curl
+
+# CentOS/RHEL
+yum install -y openvpn iptables iproute curl
+
+# 加载 tun 内核模块
+modprobe tun
+```
+
+**下载并运行：**
+
+```bash
+# 下载对应架构的二进制 (amd64 或 arm64)
+# 从 GitHub Releases 获取: https://github.com/xiaoxinkeji/aimili-vpngate/releases
+wget https://github.com/xiaoxinkeji/aimili-vpngate/releases/latest/download/aimilivpn-linux-amd64.tar.gz
+tar xzf aimilivpn-linux-amd64.tar.gz
+chmod +x aimilivpn
+
+# 直接运行 (需要 root 权限)
+sudo ./aimilivpn
+
+# 后台运行
+sudo nohup ./aimilivpn > vpngate.log 2>&1 &
+
+# 查看状态
+curl http://localhost:8787/
+```
+
+**环境变量 (与 Docker 相同)：**
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `VPNGATE_DATA_DIR` | `./vpngate_data` | 数据目录 |
+| `UI_HOST` | `::` | Web 管理后台绑定地址 |
+| `UI_PORT` | `8787` | Web 管理后台端口 |
+| `LOCAL_PROXY_HOST` | `127.0.0.1` | 代理监听地址 |
+| `LOCAL_PROXY_PORT` | `7928` | HTTP/SOCKS5 代理端口 |
+| `METRICS_ENABLED` | `true` | 是否启用 Prometheus 指标 |
+| `METRICS_PORT` | `9798` | 指标导出端口 |
+
+```bash
+# 自定义端口运行
+sudo UI_PORT=8080 LOCAL_PROXY_PORT=1080 ./aimilivpn
+
+# 指定数据目录
+sudo VPNGATE_DATA_DIR=/var/lib/aimilivpn ./aimilivpn
+```
+
+> 💡 **提示**：二进制文件 (`aimilivpn`) 已内置 `docker-stats` 功能，运行后在同一目录或 PATH 下创建名为 `docker-stats` 的符号链接即可使用状态查看命令，或直接执行 `python3 docker-stats.py`。
+
 #### 📊 Prometheus 监控
 
 容器内置 Prometheus 指标导出器，暴露进程、节点、连接、代理健康等指标。

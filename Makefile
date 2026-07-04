@@ -1,4 +1,4 @@
-.PHONY: build push up down logs stats clean shell monitor-up monitor-down auto-update
+.PHONY: build push up down logs stats clean shell monitor-up monitor-down auto-update binary binary-cross
 
 IMAGE ?= ghcr.io/xiaoxinkeji/aimili-vpngate
 TAG   ?= latest
@@ -26,6 +26,30 @@ buildx:
 
 push:
 	docker push $(IMAGE):$(TAG)
+
+# ── 二进制构建 ─────────────────────────────────────────
+BINARY_NAME ?= aimilivpn
+BINARY_ARCH ?= amd64
+
+binary:
+	docker buildx build \
+		--platform linux/$(BINARY_ARCH) \
+		--build-arg IMAGE_VERSION=$(shell git describe --tags --always --dirty 2>/dev/null || echo "dev") \
+		--build-arg BUILD_DATE=$(shell date -u +'%Y-%m-%dT%H:%M:%SZ') \
+		--build-arg GIT_COMMIT=$(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown") \
+		-f Dockerfile.binary \
+		--output type=local,dest=./release \
+		.
+
+binary-cross:
+	docker buildx build \
+		--platform $(PLATFORMS) \
+		--build-arg IMAGE_VERSION=$(shell git describe --tags --always --dirty 2>/dev/null || echo "dev") \
+		--build-arg BUILD_DATE=$(shell date -u +'%Y-%m-%dT%H:%M:%SZ') \
+		--build-arg GIT_COMMIT=$(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown") \
+		-f Dockerfile.binary \
+		--output type=local,dest=./release \
+		.
 
 # ── 运行 ──────────────────────────────────────────────
 up:
