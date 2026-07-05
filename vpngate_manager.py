@@ -878,6 +878,30 @@ def get_openvpn_version() -> float:
     _openvpn_version = 2.4
     return _openvpn_version
 
+def _download_node_config(node: dict[str, Any]) -> str:
+    """从 config_url 下载 OpenVPN 配置文件，返回配置文本或空字符串"""
+    url = node.get("config_url", "")
+    if not url:
+        return ""
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "aimilivpn/1.0"})
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            # publicvpnlist.com 的 /download/{id}/ 返回 text/plain 或直接 .ovpn 内容
+            body = resp.read().decode("utf-8", errors="replace")
+            # 如果是 HTML (下载页), 尝试提取 <code> 或 <pre> 内容
+            if body.strip().startswith("<") and "</" in body:
+                import re as _re
+                m = _re.search(r"<(?:code|pre)[^>]*>(.*?)</(?:code|pre)>", body, _re.DOTALL)
+                if m:
+                    from html import unescape as _unescape
+                    return _unescape(m.group(1).strip())
+                return ""
+            return body.strip()
+    except Exception as e:
+        print(f"[下载配置] {url} 失败: {e}", flush=True)
+        return ""
+
+
 def openvpn_command(config_file: str, route_nopull: bool, dev: str = "tun0") -> list[str]:
     command = split_openvpn_command()
     command.extend(
@@ -1373,12 +1397,12 @@ def test_node_by_id(node_id: str) -> dict[str, Any]:
         p = parse_int(node.get("remote_port"))
         fallback_ping = parse_int(node.get("ping"))
 
-    temp_path = test_config_path(node_id)
-    try:
-        CONFIG_DIR.mkdir(exist_ok=True, parents=True)
-        temp_path.write_text(config_text, encoding="utf-8")
-    except Exception as e:
-        raise RuntimeError(f"Failed to write temp config file: {e}")
+        temp_path = test_config_path(node_id)
+        try:
+            CONFIG_DIR.mkdir(exist_ok=True, parents=True)
+            temp_path.write_text(config_text, encoding="utf-8")
+        except Exception as e:
+            raise RuntimeError(f"Failed to write temp config file: {e}")
 
     latency = vpn_utils.ping_latency_ms(h, p, fallback_ping)
     
@@ -1904,7 +1928,7 @@ def maintain_valid_nodes(force: bool = False) -> str:
                 fast_candidates.sort(key=probe_priority_key)
                 fast_test_ids = [
                     n["id"] for n in fast_candidates
-                    if n.get("id")
+                    if n.get("id") and n.get("config_text")
                 ][:INITIAL_CONNECT_TEST_LIMIT]
 
             if fast_test_ids:
@@ -1944,7 +1968,7 @@ def maintain_valid_nodes(force: bool = False) -> str:
             current_nodes = read_nodes()
             to_test = [
                 n for n in current_nodes
-                if not n.get("active") and n.get("id") not in initial_tested_ids
+                if not n.get("active") and n.get("id") not in initial_tested_ids and n.get("config_text")
             ]
             to_test_ids = [n["id"] for n in to_test]
             

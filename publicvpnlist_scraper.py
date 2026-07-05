@@ -92,7 +92,8 @@ def fetch_pvl_nodes() -> list[dict[str, Any]]:
                     "quality": "",
                     "latency_ms": 0,
                     "config_file": "",
-                    "config_text": _generate_config(row),
+                    "config_url": f"{BASE_URL}/download/{sid}/",
+                    "config_text": "",
                     "proto": row.get("proto", "tcp").lower(),
                     "remote_host": row.get("host", ""),
                     "remote_port": port_raw,
@@ -125,28 +126,6 @@ _CN_MAP: dict[str, str] = {
 
 def _map_country_name(name: str) -> str:
     return _CN_MAP.get(name.lower().strip(), name)
-
-
-def _generate_config(row: dict[str, str]) -> str:
-    ip = row.get("ip", "")
-    port = row.get("port", "1194")
-    proto = row.get("proto", "tcp").lower()
-    proto_upper = "tcp-client" if proto == "tcp" else "udp"
-    return (
-        f"client\n"
-        f"dev tun\n"
-        f"proto {proto}\n"
-        f"remote {ip} {port}\n"
-        f"resolv-retry infinite\n"
-        f"nobind\n"
-        f"persist-key\n"
-        f"persist-tun\n"
-        f"remote-cert-tls server\n"
-        f"auth SHA512\n"
-        f"cipher AES-256-CBC\n"
-        f"ignore-unknown-option block-outside-dns\n"
-        f"verb 3\n"
-    )
 
 
 if __name__ == "__main__":
