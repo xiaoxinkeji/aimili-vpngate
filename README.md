@@ -45,9 +45,17 @@ bash <(curl -Ls https://raw.githubusercontent.com/baoweise-bot/aimili-vpngate/ma
 
 #### 🐳 Docker 部署
 
-支持通过 Docker / Docker Compose 一键部署，无需手动安装系统依赖。镜像自动构建多架构 (`amd64` / `arm64`)，内置健康检查和优雅关闭。
+支持通过 Docker / Docker Compose 一键部署，无需手动安装系统依赖 (openvpn / iptables 等已内置在镜像中)。镜像自动构建多架构 (`amd64` / `arm64`)，内置健康检查和优雅关闭。
 
-**前置条件：** 宿主机需加载 tun 内核模块：
+**前置条件：** 宿主机需加载 tun 内核模块。运行一键预检脚本自动完成环境配置：
+
+```bash
+# 下载并运行宿主机预检脚本 (自动加载 TUN / 配置内核参数 / 检查环境)
+wget https://raw.githubusercontent.com/xiaoxinkeji/aimili-vpngate/main/docker-host-setup.sh
+sudo bash docker-host-setup.sh
+```
+
+或手动执行：
 
 ```bash
 # 检查 TUN 是否已就绪
@@ -60,14 +68,17 @@ insmod /lib/modules/tun.ko  # modprobe 不可用时
 ```
 
 **docker-compose 部署（推荐）：**
+
 ```bash
 # 下载 docker-compose.yml
 wget https://raw.githubusercontent.com/xiaoxinkeji/aimili-vpngate/main/docker-compose.yml
+
 # 启动 (自动拉起 OpenVPN + Web UI + SOCKS5/HTTP 代理)
 docker compose up -d
 ```
 
 **手动 docker run：**
+
 ```bash
 docker run -d \
   --name aimilivpn \
@@ -80,7 +91,14 @@ docker run -d \
   ghcr.io/xiaoxinkeji/aimili-vpngate:latest
 ```
 
+> **参数说明：**
+> - `--network host` — 必须使用 host 网络模式 (VPN 策略路由依赖)
+> - `--cap-add=NET_ADMIN` — 允许容器内 iptables 修改路由规则
+> - `--device=/dev/net/tun` — 将宿主机 TUN 设备透传给容器 (OpenVPN 必需)
+> - `-v ./vpngate_data:...` — 持久化节点数据、配置文件、凭证，重启不丢失
+
 **容器内管理命令：**
+
 ```bash
 # 查看容器实时状态 (进程、端口、节点、路由、最近日志)
 docker exec -it aimilivpn docker-stats
