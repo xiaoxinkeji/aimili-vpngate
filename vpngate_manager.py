@@ -5129,6 +5129,12 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Location", f"/{secret_path}/")
             self.end_headers()
             return ""
+        # 根路径自动跳转到安全后缀登录页
+        if request_path in ("/", "/index.html"):
+            self.send_response(HTTPStatus.FOUND)
+            self.send_header("Location", f"/{secret_path}/")
+            self.end_headers()
+            return ""
         prefix = f"/{secret_path}/"
         if request_path.startswith(prefix):
             return "/" + request_path[len(prefix):]
@@ -5170,6 +5176,11 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         effective_path = self.validate_path()
         if effective_path == "": return
+
+        if effective_path == "/favicon.ico":
+            self.send_response(HTTPStatus.NO_CONTENT)
+            self.end_headers()
+            return
         
         if not self.is_authorized():
             if effective_path in ("/", "/index.html"):
@@ -5914,7 +5925,10 @@ def main() -> None:
     # 后台检查更新 (非阻塞)
     threading.Thread(target=self_update.start_update_checker, daemon=True).start()
 
-    DualStackHTTPServer((ui_host, ui_port), Handler).serve_forever()
+    try:
+        DualStackHTTPServer((ui_host, ui_port), Handler).serve_forever()
+    except KeyboardInterrupt:
+        print("\n[AimiliVPN] 收到退出信号，正在关闭...", flush=True)
 
 if __name__ == "__main__":
     if len(sys.argv) > 1:
