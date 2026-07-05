@@ -1840,7 +1840,7 @@ def maintain_valid_nodes(force: bool = False) -> str:
                                         pn[key] = prev.get(key)
                         if len(current) > 1000:
                             current = current[:1000]
-                        write_nodes(current)
+                        write_json(NODES_FILE, current)
                         for pn in pvl_candidates:
                             config_path = Path(pn.get("config_file", ""))
                             if config_path.as_posix() and not config_path.exists():
@@ -4243,11 +4243,16 @@ async function disconnectNode(){
 
 
 async function load(){
-  const r=await fetch("./api/nodes"); 
-  const d=await r.json(); 
-  nodes=Array.isArray(d.nodes) ? d.nodes : []; 
-  state=d.state||{}; 
-  
+  try{
+    const r=await fetch("./api/nodes"); 
+    if (!r.ok) { console.error("load: HTTP "+r.status); return; }
+    const d=await r.json(); 
+    nodes=Array.isArray(d.nodes) ? d.nodes : []; 
+    state=d.state||{}; 
+  }catch(e){
+    console.error("load: fetch failed", e);
+    return;
+  }
   stableSortNodes();
   updateCountryFilter();
   render();
