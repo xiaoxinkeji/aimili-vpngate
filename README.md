@@ -117,7 +117,7 @@ docker inspect --format='{{.State.Health.Status}}' aimilivpn
 
 #### 📦 二进制部署 (无需 Python / Docker)
 
-自 v1.0.0 起提供预编译的单一二进制文件，内置 Python 解释器，**无需安装 Python、Docker 或任何依赖**。
+提供预编译的单一二进制文件，内置 Python 解释器，**无需安装 Python、Docker 或任何依赖**。`releases/latest` 始终指向最新版本。
 
 **前置条件：** 需要安装系统级依赖 `openvpn` 和 `iptables`，并加载 tun 模块。
 
