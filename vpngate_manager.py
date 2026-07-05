@@ -1788,17 +1788,48 @@ def maintain_valid_nodes(force: bool = False) -> str:
             set_state(last_fetch_at=time.time(), last_fetch_status="error", last_fetch_message=diag_msg)
             candidates = []
 
-        # 从 publicvpnlist.com 补充节点
-        try:
-            pvl_candidates = fetch_pvl_candidates()
-            if pvl_candidates:
-                pvl_ids = {c["id"] for c in candidates}
-                for pn in pvl_candidates:
-                    if pn["id"] not in pvl_ids:
-                        candidates.append(pn)
-                        pvl_ids.add(pn["id"])
-        except Exception as exc:
-            print(f"[PVL] 补充节点失败: {exc}", flush=True)
+        # 从 publicvpnlist.com 补充节点 (后台线程，不阻塞首连)
+        def _fetch_pvl_and_merge() -> None:
+            try:
+                pvl_candidates = fetch_pvl_candidates()
+                if not pvl_candidates:
+                    return
+                with lock:
+                    current = read_nodes()
+                    pvl_ids = {str(c["id"]) for c in current if c.get("id")}
+                    new_count = 0
+                    for pn in pvl_candidates:
+                        if pn["id"] not in pvl_ids:
+                            current.append(pn)
+                            pvl_ids.add(pn["id"])
+                            new_count += 1
+                    if new_count:
+                        # 保留现有节点的探测结果
+                        existing = {str(n.get("id")): n for n in current if n.get("id")}
+                        for pn in pvl_candidates:
+                            prev = existing.get(str(pn.get("id")))
+                            if prev:
+                                for key in ["probe_status", "probe_message", "latency_ms",
+                                            "probed_at", "owner", "asn", "as_name",
+                                            "location", "ip_type", "quality"]:
+                                    if prev.get(key) not in (None, "", 0):
+                                        pn[key] = prev.get(key)
+                        if len(current) > 1000:
+                            current = current[:1000]
+                        write_nodes(current)
+                        for pn in pvl_candidates:
+                            config_path = Path(pn.get("config_file", ""))
+                            if config_path.as_posix() and not config_path.exists():
+                                try:
+                                    config_path.parent.mkdir(parents=True, exist_ok=True)
+                                    config_path.write_text(pn.get("config_text", ""), encoding="utf-8")
+                                except Exception:
+                                    pass
+                        print(f"[PVL] 后台线程已合并 {new_count} 个新节点 (总 {len(current)})", flush=True)
+            except Exception as exc:
+                print(f"[PVL] 后台合并失败: {exc}", flush=True)
+
+        threading.Thread(target=_fetch_pvl_and_merge, daemon=True).start()
 
         if not candidates:
             return "没有拉取到新节点"
