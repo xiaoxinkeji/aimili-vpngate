@@ -5897,7 +5897,7 @@ def main() -> None:
     print("", flush=True)
 
     # 将凭证写入文件方便后续查看
-    cred_file = Path(config_dir) / "CREDENTIALS.txt"
+    cred_file = DATA_DIR / "CREDENTIALS.txt"
     try:
         cred_file.write_text(
             f"AimiliVPN 管理凭证\n"
@@ -5944,7 +5944,7 @@ if __name__ == "__main__":
             print(f"Web 管理后台:  http://{display_host}:{port}/{secret_path}/", flush=True)
             print(f"管理账号:      {username}", flush=True)
             print(f"管理密码:      {password if password else '(无密码)'}", flush=True)
-            print(f"\n凭证文件位置:  {Path(config_dir) / 'CREDENTIALS.txt'}", flush=True)
+            print(f"\n凭证文件位置:  {DATA_DIR / 'CREDENTIALS.txt'}", flush=True)
             sys.exit(0)
         elif sys.argv[1] in ("--help", "-h"):
             print(f"AimiliVPN v{self_update.VERSION}", flush=True)
