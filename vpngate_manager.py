@@ -5946,8 +5946,22 @@ if __name__ == "__main__":
             print(f"管理密码:      {password if password else '(无密码)'}", flush=True)
             print(f"\n凭证文件位置:  {Path(config_dir) / 'CREDENTIALS.txt'}", flush=True)
             sys.exit(0)
+        elif sys.argv[1] in ("--help", "-h"):
+            print(f"AimiliVPN v{self_update.VERSION}", flush=True)
+            print(f"", flush=True)
+            print(f"用法: {sys.argv[0]} [选项]", flush=True)
+            print(f"", flush=True)
+            print(f"选项:", flush=True)
+            print(f"  -V, --version       查看版本信息", flush=True)
+            print(f"  -h, --help          显示此帮助信息", flush=True)
+            print(f"  --show-auth         查看管理凭证 (账号/密码/后台地址)", flush=True)
+            print(f"  --check-update      检查是否有新版本可用", flush=True)
+            print(f"  --update            自动下载并更新到最新版", flush=True)
+            print(f"", flush=True)
+            print(f"无选项时启动服务，数据源: vpngate.net + publicvpnlist.com", flush=True)
+            sys.exit(0)
         else:
-            print(f"用法: {sys.argv[0]} [--version | --update | --check-update | --show-auth]")
+            print(f"用法: {sys.argv[0]} [--version | --update | --check-update | --show-auth | --help]")
             sys.exit(1)
 
     main()
