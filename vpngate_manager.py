@@ -1769,9 +1769,11 @@ def maintain_valid_nodes(force: bool = False) -> str:
         msg = "节点维护任务正在运行，请稍后再试"
         set_state(last_check_message=msg)
         return msg
+    _lock_held = True
     with lock:
         if is_connecting:
             maintenance_lock.release()
+            _lock_held = False
             msg = "当前已有连接或节点测试任务正在运行，请稍后再试"
             set_state(last_check_message=msg)
             return msg
@@ -2028,7 +2030,9 @@ def maintain_valid_nodes(force: bool = False) -> str:
         raise e
     finally:
         is_connecting = False
-        maintenance_lock.release()
+        if _lock_held:
+            maintenance_lock.release()
+        set_state(is_connecting=False)
 
 
 def collector_loop() -> None:
