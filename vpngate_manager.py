@@ -65,7 +65,7 @@ class DualStackHTTPServer(ThreadingHTTPServer):
                 self.address_family = socket.AF_INET
                 super().__init__((fallback_host, port), RequestHandlerClass, bind_and_activate)
             else:
-                raise e
+                raise
 
     def server_bind(self):
         if self.address_family == socket.AF_INET6:
@@ -352,8 +352,11 @@ def log_to_json(level: str, module: str, message: str) -> None:
         print(f"[Log Error] Failed to write JSON log: {e}", flush=True)
 
 def set_state(**updates: Any) -> None:
+    global is_connecting
     state = get_state()
     state.update(updates)
+    if "is_connecting" in updates:
+        is_connecting = updates["is_connecting"]
     write_json(STATE_FILE, state)
 
 def read_nodes() -> list[dict[str, Any]]:
@@ -2027,7 +2030,7 @@ def maintain_valid_nodes(force: bool = False) -> str:
         )
         return message
     except Exception as e:
-        raise e
+        raise
     finally:
         is_connecting = False
         if _lock_held:
@@ -4971,7 +4974,7 @@ def check_proxy_health() -> dict[str, Any]:
                 s.settimeout(1.5)
                 s.connect(("127.0.0.1", LOCAL_PROXY_PORT))
             else:
-                raise e
+                raise
     except Exception as e:
         diag = vpn_utils.diagnose_local_obstructions(LOCAL_PROXY_PORT, host=LOCAL_PROXY_HOST)
         diag_msg = diag[1] if diag else f"端口 {LOCAL_PROXY_PORT} 连接失败，原因: {e}"
@@ -5257,39 +5260,43 @@ class Handler(BaseHTTPRequestHandler):
         if effective_path in ("/", "/index.html"):
             self.send_bytes(INDEX_HTML.encode("utf-8"), "text/html; charset=utf-8")
         elif effective_path == "/api/nodes":
-            global last_active_ping_time, last_active_latency, active_openvpn_node_id
-            nodes = read_nodes()
-            active_node = next((n for n in nodes if active_openvpn_node_id and n.get("id") == active_openvpn_node_id), None)
-            for n in nodes:
-                n["active"] = (active_openvpn_node_id and n.get("id") == active_openvpn_node_id)
-            if active_node:
-                ip = active_node.get("ip") or active_node.get("remote_host")
-                if ip:
-                    now = time.time()
-                    if now - last_active_ping_time > 15.0:
-                        last_active_ping_time = now
-                        def bg_ping(ip_addr: str, port: int, fallback: int) -> None:
-                            global last_active_latency
-                            try:
-                                latency = vpn_utils.ping_latency_ms(ip_addr, port, fallback)
-                                if latency > 0:
-                                    last_active_latency = latency
-                            except Exception:
-                                pass
-                        threading.Thread(
-                            target=bg_ping, 
-                            args=(ip, parse_int(active_node.get("remote_port")), parse_int(active_node.get("ping"))),
-                            daemon=True
-                        ).start()
-                    if last_active_latency > 0:
-                        active_node["latency_ms"] = last_active_latency
-            stripped_nodes = []
-            for n in nodes:
-                stripped = n.copy()
-                if "config_text" in stripped:
-                    del stripped["config_text"]
-                stripped_nodes.append(stripped)
-            self.send_json({"nodes": stripped_nodes, "state": get_state()})
+            try:
+                global last_active_ping_time, last_active_latency, active_openvpn_node_id
+                nodes = read_nodes()
+                active_node = next((n for n in nodes if active_openvpn_node_id and n.get("id") == active_openvpn_node_id), None)
+                for n in nodes:
+                    n["active"] = (active_openvpn_node_id and n.get("id") == active_openvpn_node_id)
+                if active_node:
+                    ip = active_node.get("ip") or active_node.get("remote_host")
+                    if ip:
+                        now = time.time()
+                        if now - last_active_ping_time > 15.0:
+                            last_active_ping_time = now
+                            def bg_ping(ip_addr: str, port: int, fallback: int) -> None:
+                                global last_active_latency
+                                try:
+                                    latency = vpn_utils.ping_latency_ms(ip_addr, port, fallback)
+                                    if latency > 0:
+                                        last_active_latency = latency
+                                except Exception:
+                                    pass
+                            threading.Thread(
+                                target=bg_ping, 
+                                args=(ip, parse_int(active_node.get("remote_port")), parse_int(active_node.get("ping"))),
+                                daemon=True
+                            ).start()
+                        if last_active_latency > 0:
+                            active_node["latency_ms"] = last_active_latency
+                stripped_nodes = []
+                for n in nodes:
+                    stripped = n.copy()
+                    if "config_text" in stripped:
+                        del stripped["config_text"]
+                    stripped_nodes.append(stripped)
+                self.send_json({"nodes": stripped_nodes, "state": get_state()})
+            except Exception as exc:
+                log_to_json("ERROR", "API", f"/api/nodes 异常: {exc}")
+                self.send_json({"nodes": [], "state": get_state(), "error": str(exc)})
         elif effective_path.startswith("/configs/"):
             filename = urllib.parse.unquote(effective_path.removeprefix("/configs/"))
             with lock:
@@ -5309,102 +5316,106 @@ class Handler(BaseHTTPRequestHandler):
                 "update_url": info.get("url"),
             })
         elif effective_path == "/api/gateway_status":
-            web_ui_status = {
-                "name": "Web 管理服务",
-                "status": "running",
-                "details": f"监听地址: {load_ui_config().get('host', UI_HOST)}:{load_ui_config().get('port', UI_PORT)}",
-                "error": ""
-            }
-            proxy_ok = False
-            proxy_err = ""
-            is_ipv6 = ":" in LOCAL_PROXY_HOST
-            af = socket.AF_INET6 if is_ipv6 else socket.AF_INET
-            s = None
             try:
-                s = socket.socket(af, socket.SOCK_STREAM)
-                s.settimeout(0.5)
-                connect_host = LOCAL_PROXY_HOST
-                if connect_host in ("::", "0.0.0.0", ""):
-                    connect_host = "::1" if is_ipv6 else "127.0.0.1"
+                web_ui_status = {
+                    "name": "Web 管理服务",
+                    "status": "running",
+                    "details": f"监听地址: {load_ui_config().get('host', UI_HOST)}:{load_ui_config().get('port', UI_PORT)}",
+                    "error": ""
+                }
+                proxy_ok = False
+                proxy_err = ""
+                is_ipv6 = ":" in LOCAL_PROXY_HOST
+                af = socket.AF_INET6 if is_ipv6 else socket.AF_INET
+                s = None
                 try:
-                    s.connect((connect_host, LOCAL_PROXY_PORT))
-                    proxy_ok = True
-                except Exception:
-                    if connect_host == "::1":
-                        s.close()
-                        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                        s.settimeout(0.5)
-                        s.connect(("127.0.0.1", LOCAL_PROXY_PORT))
-                        proxy_ok = True
-                    else:
-                        raise
-            except Exception as e:
-                diag = vpn_utils.diagnose_local_obstructions(LOCAL_PROXY_PORT, host=LOCAL_PROXY_HOST)
-                proxy_err = diag[1] if diag else f"本地代理网关无法连通: {e}"
-            finally:
-                if s is not None:
+                    s = socket.socket(af, socket.SOCK_STREAM)
+                    s.settimeout(0.5)
+                    connect_host = LOCAL_PROXY_HOST
+                    if connect_host in ("::", "0.0.0.0", ""):
+                        connect_host = "::1" if is_ipv6 else "127.0.0.1"
                     try:
-                        s.close()
+                        s.connect((connect_host, LOCAL_PROXY_PORT))
+                        proxy_ok = True
                     except Exception:
-                        pass
-            proxy_gateway_status = {
-                "name": "本地代理网关",
-                "status": "running" if proxy_ok else "stopped",
-                "details": f"监听地址: {LOCAL_PROXY_HOST}:{LOCAL_PROXY_PORT}",
-                "error": proxy_err
-            }
-            ovpn_ok = active_openvpn_running()
-            ovpn_err = ""
-            ovpn_details = "未连接"
-            if ovpn_ok:
-                ovpn_details = f"已连接节点: {active_openvpn_node_id}"
-                if sys.platform.startswith("linux"):
-                    if not Path("/sys/class/net/tun0").exists():
-                        ovpn_err = "[警告] 虚拟网卡 (tun0) 未启用，可能存在策略路由配置问题。"
-            else:
-                if active_openvpn_node_id:
-                    ovpn_err = "连接已中断或 OpenVPN 核心程序异常退出。"
-                    ovpn_details = f"尝试连接节点 {active_openvpn_node_id} 失败"
-            openvpn_status = {
-                "name": "OpenVPN 核心连接",
-                "status": "running" if ovpn_ok else "stopped",
-                "details": ovpn_details,
-                "error": ovpn_err
-            }
-            now = time.time()
-            server_uptime = now - server_start_time
-            collector_ok = (last_collector_heartbeat > 0.0 and now - last_collector_heartbeat < (CHECK_INTERVAL_SECONDS * 1.5)) or (server_uptime < 15.0)
-            collector_status = {
-                "name": "节点同步守护线程",
-                "status": "running" if collector_ok else "stopped",
-                "details": f"上次心跳: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(last_collector_heartbeat)) if last_collector_heartbeat > 0 else '等待启动'}",
-                "error": "" if collector_ok else "线程可能已异常终止，导致无法在后台拉取和测速新节点。"
-            }
-            checker_ok = (last_checker_heartbeat > 0.0 and now - last_checker_heartbeat < 90.0) or (server_uptime < 35.0)
-            checker_status = {
-                "name": "出口检测守护线程",
-                "status": "running" if checker_ok else "stopped",
-                "details": f"上次心跳: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(last_checker_heartbeat)) if last_checker_heartbeat > 0 else '等待启动'}",
-                "error": "" if checker_ok else "线程可能已挂起或终止，导致无法实时获取代理出口状态。"
-            }
-            pinger_ok = (last_pinger_heartbeat > 0.0 and now - last_pinger_heartbeat < 30.0) or (server_uptime < 15.0)
-            pinger_status = {
-                "name": "延迟测速守护线程",
-                "status": "running" if pinger_ok else "stopped",
-                "details": f"上次心跳: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(last_pinger_heartbeat)) if last_pinger_heartbeat > 0 else '等待启动'}",
-                "error": "" if pinger_ok else "线程可能已中止，无法实时刷新活动节点的 Ping 延迟。"
-            }
-            self.send_json({
-                "ok": True,
-                "services": [
-                    web_ui_status,
-                    proxy_gateway_status,
-                    openvpn_status,
-                    collector_status,
-                    checker_status,
-                    pinger_status
-                ]
-            })
+                        if connect_host == "::1":
+                            s.close()
+                            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                            s.settimeout(0.5)
+                            s.connect(("127.0.0.1", LOCAL_PROXY_PORT))
+                            proxy_ok = True
+                        else:
+                            raise
+                except Exception as e:
+                    diag = vpn_utils.diagnose_local_obstructions(LOCAL_PROXY_PORT, host=LOCAL_PROXY_HOST)
+                    proxy_err = diag[1] if diag else f"本地代理网关无法连通: {e}"
+                finally:
+                    if s is not None:
+                        try:
+                            s.close()
+                        except Exception:
+                            pass
+                proxy_gateway_status = {
+                    "name": "本地代理网关",
+                    "status": "running" if proxy_ok else "stopped",
+                    "details": f"监听地址: {LOCAL_PROXY_HOST}:{LOCAL_PROXY_PORT}",
+                    "error": proxy_err
+                }
+                ovpn_ok = active_openvpn_running()
+                ovpn_err = ""
+                ovpn_details = "未连接"
+                if ovpn_ok:
+                    ovpn_details = f"已连接节点: {active_openvpn_node_id}"
+                    if sys.platform.startswith("linux"):
+                        if not Path("/sys/class/net/tun0").exists():
+                            ovpn_err = "[警告] 虚拟网卡 (tun0) 未启用，可能存在策略路由配置问题。"
+                else:
+                    if active_openvpn_node_id:
+                        ovpn_err = "连接已中断或 OpenVPN 核心程序异常退出。"
+                        ovpn_details = f"尝试连接节点 {active_openvpn_node_id} 失败"
+                openvpn_status = {
+                    "name": "OpenVPN 核心连接",
+                    "status": "running" if ovpn_ok else "stopped",
+                    "details": ovpn_details,
+                    "error": ovpn_err
+                }
+                now = time.time()
+                server_uptime = now - server_start_time
+                collector_ok = (last_collector_heartbeat > 0.0 and now - last_collector_heartbeat < (CHECK_INTERVAL_SECONDS * 1.5)) or (server_uptime < 15.0)
+                collector_status = {
+                    "name": "节点同步守护线程",
+                    "status": "running" if collector_ok else "stopped",
+                    "details": f"上次心跳: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(last_collector_heartbeat)) if last_collector_heartbeat > 0 else '等待启动'}",
+                    "error": "" if collector_ok else "线程可能已异常终止，导致无法在后台拉取和测速新节点。"
+                }
+                checker_ok = (last_checker_heartbeat > 0.0 and now - last_checker_heartbeat < 90.0) or (server_uptime < 35.0)
+                checker_status = {
+                    "name": "出口检测守护线程",
+                    "status": "running" if checker_ok else "stopped",
+                    "details": f"上次心跳: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(last_checker_heartbeat)) if last_checker_heartbeat > 0 else '等待启动'}",
+                    "error": "" if checker_ok else "线程可能已挂起或终止，导致无法实时获取代理出口状态。"
+                }
+                pinger_ok = (last_pinger_heartbeat > 0.0 and now - last_pinger_heartbeat < 30.0) or (server_uptime < 15.0)
+                pinger_status = {
+                    "name": "延迟测速守护线程",
+                    "status": "running" if pinger_ok else "stopped",
+                    "details": f"上次心跳: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(last_pinger_heartbeat)) if last_pinger_heartbeat > 0 else '等待启动'}",
+                    "error": "" if pinger_ok else "线程可能已中止，无法实时刷新活动节点的 Ping 延迟。"
+                }
+                self.send_json({
+                    "ok": True,
+                    "services": [
+                        web_ui_status,
+                        proxy_gateway_status,
+                        openvpn_status,
+                        collector_status,
+                        checker_status,
+                        pinger_status
+                    ]
+                })
+            except Exception as exc:
+                log_to_json("ERROR", "API", f"/api/gateway_status 异常: {exc}")
+                self.send_json({"ok": False, "error": str(exc), "services": []})
         elif effective_path == "/api/logs":
             logs_dir = DATA_DIR / "logs"
             date_str = time.strftime("%Y-%m-%d", time.localtime())
@@ -5845,6 +5856,22 @@ class Tee:
 
     def isatty(self) -> bool:
         return self.stdout.isatty()
+
+    def close(self) -> None:
+        if self.file and not self.file.closed:
+            self.file.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args: Any) -> None:
+        self.close()
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            pass
 
     def __getattr__(self, attr: str) -> Any:
         return getattr(self.stdout, attr)
