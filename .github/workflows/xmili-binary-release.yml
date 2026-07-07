@@ -27,7 +27,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version-file: 'x-mili/go.mod'
+          go-version: '1.26'
 
       - name: Apply aimili-vpngate integration patches
         run: |
