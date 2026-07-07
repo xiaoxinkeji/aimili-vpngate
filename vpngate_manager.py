@@ -146,6 +146,8 @@ is_connecting = False
 last_active_ping_time = 0.0
 last_active_latency = 0
 
+X_MILI_TOKEN = os.environ.get("X_MILI_TOKEN", "")
+
 last_collector_heartbeat = 0.0
 last_checker_heartbeat = 0.0
 last_pinger_heartbeat = 0.0
@@ -5158,6 +5160,8 @@ class Handler(BaseHTTPRequestHandler):
         return ui_cfg.get("secret_path", "EJsW2EeBo9lY")
 
     def is_authorized(self) -> bool:
+        if X_MILI_TOKEN and self.is_xmili_token_valid():
+            return True
         ui_cfg = load_ui_config()
         pwd = ui_cfg.get("password")
         if not pwd:
@@ -5186,10 +5190,18 @@ class Handler(BaseHTTPRequestHandler):
                 active_sessions.pop(session_token, None)
         return False
 
+    def is_xmili_token_valid(self) -> bool:
+        auth_header = self.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            return auth_header[7:] == X_MILI_TOKEN
+        return False
+
     def validate_path(self) -> str:
         secret_path = self.get_secret_path()
         request_path = urllib.parse.urlsplit(self.path).path
         if not secret_path:
+            return request_path
+        if self.is_xmili_token_valid():
             return request_path
         if request_path == f"/{secret_path}":
             self.send_response(HTTPStatus.FOUND)

@@ -1,0 +1,56 @@
+# ─── X-MILI + AimiliVPN 集成 Dockerfile ───
+# 在 X-MILI 官方镜像基础上应用 aimili-vpngate 集成补丁
+# 构建: docker build -f Dockerfile.xmili -t xmili-aimili .
+# 或者直接在 docker-compose.x-mili.yml 中指定
+
+FROM golang:1.26-alpine AS builder
+WORKDIR /app
+ARG TARGETARCH
+
+RUN apk --no-cache --update add \
+  build-base \
+  gcc \
+  curl \
+  unzip
+
+COPY x-mili/ .
+
+# 应用 aimili-vpngate 集成补丁
+COPY xmili-integration/vpngate_aimili.go web/service/
+COPY xmili-integration/vpngate.patch /tmp/
+RUN patch -p1 < /tmp/vpngate.patch
+
+ENV CGO_ENABLED=1
+ENV CGO_CFLAGS="-D_LARGEFILE64_SOURCE"
+RUN go build -ldflags "-w -s" -o build/x-ui main.go
+RUN ./DockerInit.sh "$TARGETARCH"
+
+FROM alpine
+ENV TZ=Asia/Tehran
+WORKDIR /app
+
+RUN apk add --no-cache --update \
+  ca-certificates \
+  tzdata \
+  fail2ban \
+  bash \
+  curl \
+  iproute2 \
+  openvpn \
+  openssl
+
+COPY --from=builder /app/build/ /app/
+COPY --from=builder /app/DockerEntrypoint.sh /app/
+COPY --from=builder /app/x-ui.sh /usr/bin/x-ui
+COPY --from=builder /app/x-ui.rc /etc/init.d/x-ui
+
+RUN chmod +x /usr/bin/x-ui /etc/init.d/x-ui /app/DockerEntrypoint.sh
+
+ENV XUI_ENABLE_FAIL2BAN=false
+
+VOLUME [ "/etc/x-ui" ]
+VOLUME [ "/root/cert" ]
+
+EXPOSE 54321
+
+ENTRYPOINT [ "/app/DockerEntrypoint.sh" ]

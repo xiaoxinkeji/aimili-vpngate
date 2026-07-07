@@ -1,0 +1,94 @@
+# ─── AimiliVPN + X-MILI 联合部署文件 ───
+# 前置条件:
+#   sudo bash docker-host-setup.sh
+#
+# 启动:  docker compose -f docker-compose.x-mili.yml up -d
+# 停止:  docker compose -f docker-compose.x-mili.yml down
+# 日志:  docker logs -f aimilivpn
+#        docker logs -f xmili
+#
+# 服务端口:
+#   AimiliVPN Web: http://<host>:8787/<secret_path>/
+#   AimiliVPN Proxy: socks5://<host>:7928
+#   X-MILI Web: http://<host>:<X-MILI端口>/<X-MILI安全路径>/
+#
+
+services:
+  aimilivpn:
+    build:
+      context: .
+      dockerfile: ./Dockerfile
+      args:
+        IMAGE_VERSION: dev
+        BUILD_DATE: unknown
+        GIT_COMMIT: unknown
+    image: ghcr.io/xiaoxinkeji/aimili-vpngate:latest
+    container_name: aimilivpn
+    restart: unless-stopped
+    network_mode: host
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    environment:
+      - VPNGATE_DATA_DIR=/opt/aimilivpn/vpngate_data
+      - LOCAL_PROXY_HOST=127.0.0.1
+      - LOCAL_PROXY_PORT=7928
+      - UI_HOST=::
+      - UI_PORT=8787
+      - X_MILI_TOKEN=xmili-integration-token-change-me
+    volumes:
+      - ./vpngate_data:/opt/aimilivpn/vpngate_data
+    tmpfs:
+      - /tmp:exec
+    sysctls:
+      - net.ipv4.conf.all.rp_filter=2
+      - net.ipv4.conf.default.rp_filter=2
+      - net.ipv4.ip_forward=1
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pgrep -f vpngate_manager.py > /dev/null && curl -sf --max-time 5 \"http://localhost:8787/\" > /dev/null || exit 1",
+        ]
+      interval: 30s
+      timeout: 10s
+      start_period: 90s
+      retries: 3
+
+  xmili:
+    build:
+      context: .
+      dockerfile: ./Dockerfile.xmili
+    container_name: xmili
+    restart: unless-stopped
+    network_mode: host
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    environment:
+      - XRAY_VMESS_AEAD_FORCED=false
+      - XUI_ENABLE_FAIL2BAN=false
+      - AIMILI_NODE_API=http://127.0.0.1:8787
+      - X_MILI_TOKEN=xmili-integration-token-change-me
+    volumes:
+      - ./xmili_db/:/etc/x-ui/
+      - ./xmili_cert/:/root/cert/
+    tty: true
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
+    depends_on:
+      aimilivpn:
+        condition: service_healthy

@@ -1,0 +1,43 @@
+--- a/web/service/vpngate.go
++++ b/web/service/vpngate.go
+@@ -70,16 +70,38 @@ func (s *VPNGateService) ListServersWithUnavailable(refresh bool, includeUnavail
+ }
+ 
+ func loadVPNGateServers() ([]VPNGateServer, error) {
+ 	servers, err := (VPNGateFetcher{}).Fetch()
+ 	if err != nil {
+-		return nil, err
++		logger.Warning("VPNGate fetch failed:", err)
++		servers = nil
++	} else {
++		servers = (VPNGateValidator{}).Validate(servers)
+ 	}
+-	servers = (VPNGateValidator{}).Validate(servers)
++
++	aimiliURL := getAimiliAPIURL()
++	if aimiliURL != "" {
++		aimiliServers, aimiliErr := fetchAimiliNodes(aimiliURL)
++		if aimiliErr != nil {
++			logger.Warning("aimili-vpngate fetch failed:", aimiliErr)
++		} else {
++			seen := make(map[string]bool)
++			for _, s := range servers {
++				seen[s.IP] = true
++			}
++			for _, s := range aimiliServers {
++				if !seen[s.IP] {
++					servers = append(servers, s)
++				}
++			}
++			logger.Infof("[AimiliVPN] Merged aimili-vpngate nodes, total: %d", len(servers))
++		}
++	}
++
++	if len(servers) == 0 {
++		return nil, err
++	}
++
+ 	sortVPNGateServers(servers)
+-
+ 	return servers, nil
+ }
