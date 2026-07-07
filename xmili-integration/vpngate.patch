@@ -1,18 +1,16 @@
+diff --git a/web/service/vpngate.go b/web/service/vpngate.go
+index d880dff..dec4198 100644
 --- a/web/service/vpngate.go
 +++ b/web/service/vpngate.go
-@@ -70,16 +70,38 @@ func (s *VPNGateService) ListServersWithUnavailable(refresh bool, includeUnavail
- }
- 
+@@ -73,11 +73,36 @@ func (s *VPNGateService) ListServersWithUnavailable(refresh bool, includeUnavail
  func loadVPNGateServers() ([]VPNGateServer, error) {
  	servers, err := (VPNGateFetcher{}).Fetch()
  	if err != nil {
--		return nil, err
 +		logger.Warning("VPNGate fetch failed:", err)
 +		servers = nil
 +	} else {
 +		servers = (VPNGateValidator{}).Validate(servers)
- 	}
--	servers = (VPNGateValidator{}).Validate(servers)
++	}
 +
 +	aimiliURL := getAimiliAPIURL()
 +	if aimiliURL != "" {
@@ -34,10 +32,12 @@
 +	}
 +
 +	if len(servers) == 0 {
-+		return nil, err
-+	}
-+
- 	sortVPNGateServers(servers)
--
+ 		return nil, err
+ 	}
+-	servers = (VPNGateValidator{}).Validate(servers)
+-	sortVPNGateServers(servers)
+ 
++	sortVPNGateServers(servers)
  	return servers, nil
  }
+ 

@@ -14,14 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        arch: [amd64, arm64]
-        include:
-          - arch: amd64
-            goarch: amd64
-            goarm: ""
-          - arch: arm64
-            goarch: arm64
-            goarm: ""
+        goarch: [amd64, arm64]
     permissions:
       contents: write
 
@@ -34,7 +27,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.23'
+          go-version-file: 'x-mili/go.mod'
 
       - name: Apply aimili-vpngate integration patches
         run: |
@@ -42,11 +35,21 @@ jobs:
           cd x-mili
           patch -p1 < ../xmili-integration/vpngate.patch
 
-      - name: Build X-MILI binary (${{ matrix.arch }})
+      - name: Download Go dependencies
+        run: |
+          cd x-mili
+          go mod download
+
+      - name: Setup cross-compiler (arm64)
+        if: matrix.goarch == 'arm64'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq gcc-aarch64-linux-gnu
+
+      - name: Build X-MILI binary (${{ matrix.goarch }})
         run: |
           cd x-mili
           if [ "${{ matrix.goarch }}" = "arm64" ]; then
-            sudo apt-get update -qq && sudo apt-get install -y -qq gcc-aarch64-linux-gnu
             export CC=aarch64-linux-gnu-gcc
           fi
           CGO_ENABLED=1 GOOS=linux GOARCH=${{ matrix.goarch }} \
@@ -55,13 +58,13 @@ jobs:
       - name: Package binary
         run: |
           chmod +x x-mili-integrated
-          tar czf x-mili-integrated-linux-${{ matrix.arch }}.tar.gz x-mili-integrated
+          tar czf x-mili-integrated-linux-${{ matrix.goarch }}.tar.gz x-mili-integrated
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: xmili-binary-linux-${{ matrix.arch }}
-          path: x-mili-integrated-linux-${{ matrix.arch }}.tar.gz
+          name: xmili-binary-linux-${{ matrix.goarch }}
+          path: x-mili-integrated-linux-${{ matrix.goarch }}.tar.gz
 
   release:
     needs: build
@@ -82,7 +85,6 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           files: release/*.tar.gz
-          name: ${{ github.ref_name }} (X-MILI Integrated)
           generate_release_notes: true
           draft: false
         env:

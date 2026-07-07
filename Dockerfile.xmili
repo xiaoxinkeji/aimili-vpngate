@@ -1,7 +1,7 @@
 # ─── X-MILI + AimiliVPN 集成 Dockerfile ───
 # 在 X-MILI 官方镜像基础上应用 aimili-vpngate 集成补丁
-# 构建: docker build -f Dockerfile.xmili -t xmili-aimili .
-# 或者直接在 docker-compose.x-mili.yml 中指定
+# CI 自动构建: ghcr.io/xiaoxinkeji/x-mili-integrated
+# 本地构建: docker build -f Dockerfile.xmili -t xmili-aimili .
 
 FROM golang:1.26-alpine AS builder
 WORKDIR /app
@@ -11,17 +11,19 @@ RUN apk --no-cache --update add \
   build-base \
   gcc \
   curl \
-  unzip
+  unzip \
+  patch
 
 COPY x-mili/ .
 
 # 应用 aimili-vpngate 集成补丁
 COPY xmili-integration/vpngate_aimili.go web/service/
 COPY xmili-integration/vpngate.patch /tmp/
-RUN patch -p1 < /tmp/vpngate.patch
+RUN patch -p1 < /tmp/vpngate.patch && rm /tmp/vpngate.patch
 
 ENV CGO_ENABLED=1
 ENV CGO_CFLAGS="-D_LARGEFILE64_SOURCE"
+RUN go mod download
 RUN go build -ldflags "-w -s" -o build/x-ui main.go
 RUN ./DockerInit.sh "$TARGETARCH"
 

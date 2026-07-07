@@ -12,8 +12,6 @@
 #   docker compose -f docker-compose.x-mili.yml logs -f xmili
 #   docker compose -f docker-compose.x-mili.yml down
 
-x-mili-token: &xmili-token ${X_MILI_TOKEN:-xmili-integration-token-change-me}
-
 services:
   aimilivpn:
     build:
@@ -38,7 +36,7 @@ services:
       - LOCAL_PROXY_PORT=${AIMILI_PROXY_PORT:-7928}
       - UI_HOST=::
       - UI_PORT=${AIMILI_PORT:-8787}
-      - X_MILI_TOKEN=*xmili-token
+      - X_MILI_TOKEN=${X_MILI_TOKEN:-xmili-integration-token-change-me}
     volumes:
       - aimili_data:/opt/aimilivpn/vpngate_data
     tmpfs:
@@ -81,7 +79,7 @@ services:
       - XRAY_VMESS_AEAD_FORCED=false
       - XUI_ENABLE_FAIL2BAN=false
       - AIMILI_NODE_API=http://127.0.0.1:${AIMILI_PORT:-8787}
-      - X_MILI_TOKEN=*xmili-token
+      - X_MILI_TOKEN=${X_MILI_TOKEN:-xmili-integration-token-change-me}
     volumes:
       - xmili_db:/etc/x-ui/
       - xmili_cert:/root/cert/
