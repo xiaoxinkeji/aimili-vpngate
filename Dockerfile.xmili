@@ -14,18 +14,23 @@ RUN apk --no-cache --update add \
   unzip \
   patch
 
+ENV CGO_ENABLED=1
+ENV CGO_CFLAGS="-D_LARGEFILE64_SOURCE"
+
 COPY x-mili/ .
 
-# 应用 aimili-vpngate 集成补丁
 COPY xmili-integration/vpngate_aimili.go web/service/
 COPY xmili-integration/vpngate.patch /tmp/
 RUN patch -p1 < /tmp/vpngate.patch && rm /tmp/vpngate.patch
 
-ENV CGO_ENABLED=1
-ENV CGO_CFLAGS="-D_LARGEFILE64_SOURCE"
 RUN go mod download
 RUN go build -ldflags "-w -s" -o build/x-ui main.go
-RUN ./DockerInit.sh "$TARGETARCH"
+
+# Download Xray binary and geoip data with retries
+RUN for i in 1 2 3; do \
+    ./DockerInit.sh "$TARGETARCH" && break || \
+    (echo "DockerInit.sh attempt $i failed, retrying..." && sleep 10); \
+    done
 
 FROM alpine
 ENV TZ=Asia/Tehran
@@ -46,7 +51,12 @@ COPY --from=builder /app/DockerEntrypoint.sh /app/
 COPY --from=builder /app/x-ui.sh /usr/bin/x-ui
 COPY --from=builder /app/x-ui.rc /etc/init.d/x-ui
 
-RUN chmod +x /usr/bin/x-ui /etc/init.d/x-ui /app/DockerEntrypoint.sh
+RUN chmod +x /usr/bin/x-ui /etc/init.d/x-ui /app/DockerEntrypoint.sh \
+  && rm -f /etc/fail2ban/jail.d/alpine-ssh.conf \
+  && cp /etc/fail2ban/jail.conf /etc/fail2ban/jail.local \
+  && sed -i "s/^\[ssh\]$/&\nenabled = false/" /etc/fail2ban/jail.local \
+  && sed -i "s/^\[sshd\]$/&\nenabled = false/" /etc/fail2ban/jail.local \
+  && sed -i "s/#allowipv6 = auto/allowipv6 = auto/g" /etc/fail2ban/fail2ban.conf
 
 ENV XUI_ENABLE_FAIL2BAN=false
 

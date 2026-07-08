@@ -57,8 +57,8 @@ jobs:
             IMAGE_VERSION=${{ github.ref_name }}
             BUILD_DATE=${{ github.event.head_commit && github.event.head_commit.timestamp || github.event.repository.updated_at }}
             GIT_COMMIT=${{ github.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=aimili
+          cache-to: type=gha,scope=aimili,mode=max
 
   build-xmili:
     runs-on: ubuntu-latest
@@ -104,5 +104,5 @@ jobs:
           platforms: linux/amd64,linux/arm64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=xmili
+          cache-to: type=gha,scope=xmili,mode=max

@@ -6,6 +6,8 @@ install.sh
 Dockerfile
 .dockerignore
 docker-compose.yml
+docker-compose.x-mili.yml
 Makefile
 contrib/
 vpngate_data/
+x-mili/.git
