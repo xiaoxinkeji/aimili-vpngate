@@ -11,6 +11,9 @@
 #   docker compose -f docker-compose.x-mili.yml logs -f aimilivpn
 #   docker compose -f docker-compose.x-mili.yml logs -f xmili
 #   docker compose -f docker-compose.x-mili.yml down
+#
+# X-MILI 管理面板: http://<host>:54321
+# AimiliVPN 管理面板: http://<host>:${AIMILI_PORT:-8787}
 
 services:
   aimilivpn:
@@ -37,6 +40,9 @@ services:
       - UI_HOST=::
       - UI_PORT=${AIMILI_PORT:-8787}
       - X_MILI_TOKEN=${X_MILI_TOKEN:-xmili-integration-token-change-me}
+      - METRICS_ENABLED=true
+      - METRICS_PORT=9798
+      - METRICS_REFRESH_INTERVAL=15
     volumes:
       - aimili_data:/opt/aimilivpn/vpngate_data
     tmpfs:
@@ -56,7 +62,7 @@ services:
       test:
         [
           "CMD-SHELL",
-          "pgrep -f vpngate_manager.py > /dev/null && curl -sf --max-time 5 http://localhost:${AIMILI_PORT:-8787}/ > /dev/null || exit 1",
+          "pgrep -f vpngate_manager.py > /dev/null && curl -sf --max-time 5 \"http://localhost:$${UI_PORT:-8787}/\" > /dev/null || exit 1",
         ]
       interval: 30s
       timeout: 10s
