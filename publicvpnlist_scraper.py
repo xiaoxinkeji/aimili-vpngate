@@ -77,6 +77,7 @@ def fetch_pvl_nodes() -> list[dict[str, Any]]:
                 nodes.append({
                     "id": f"pvl_{sid}",
                     "country": _map_country_name(country_name),
+                    "country_long": country_name,
                     "country_short": country_short,
                     "host_name": row.get("host", ""),
                     "ip": row.get("ip", ""),
