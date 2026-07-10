@@ -13,7 +13,7 @@ import (
 
 type aimiliNode struct {
 	ID           string `json:"id"`
-	Country      string `json:"country"`
+	Country      string `json:"country_long"`
 	CountryShort string `json:"country_short"`
 	HostName     string `json:"host_name"`
 	IP           string `json:"ip"`
@@ -79,6 +79,10 @@ func fetchAimiliNodes(apiURL string) ([]VPNGateServer, error) {
 		if n.ConfigFile == "" {
 			continue
 		}
+		countryLong := n.Country
+		if countryLong == "" {
+			countryLong = n.CountryShort
+		}
 		ipType := n.IPType
 		if ipType == "" || ipType == "unknown" {
 			ipType = "Unknown"
@@ -95,7 +99,7 @@ func fetchAimiliNodes(apiURL string) ([]VPNGateServer, error) {
 		server := VPNGateServer{
 			HostName:          n.HostName,
 			IP:                n.IP,
-			CountryLong:       n.Country,
+			CountryLong:       countryLong,
 			CountryShort:      n.CountryShort,
 			CountryShortLower: strings.ToLower(n.CountryShort),
 			NumSessions:       int64(n.Sessions),

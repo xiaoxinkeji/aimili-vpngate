@@ -734,6 +734,7 @@ def row_to_node(row: dict[str, str], config_text: str) -> dict[str, Any]:
     return {
         "id": node_id,
         "country": country_zh,
+        "country_long": country_long,
         "country_short": country_short,
         "host_name": row.get("HostName", ""),
         "ip": ip,
