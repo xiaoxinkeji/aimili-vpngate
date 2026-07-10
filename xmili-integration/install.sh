@@ -14,7 +14,7 @@ warn()   { echo -e "${YW}[!]${NC} $*"; }
 err()    { echo -e "${RD}[-]${NC} $*" >&2; exit 1; }
 info()   { echo -e "${BL}[*]${NC} $*"; }
 
-[[ $EUID -ne 0 ]] && err "请使用 root 运行 / Please run as root"
+[[ $EUID -ne 0 ]] && err "请使用 root 运行"
 
 # ─── 变量 ───
 REPO="https://github.com/xiaoxinkeji/aimili-vpngate"
@@ -26,7 +26,6 @@ XMILI_DB="/etc/x-ui"
 AIMILI_PORT="${AIMILI_PORT:-8787}"
 AIMILI_PROXY_PORT="${AIMILI_PROXY_PORT:-7928}"
 XMILI_PORT="${XMILI_PORT:-}"
-XMILI_PANEL_PORT="${XMILI_PANEL_PORT:-}"
 
 # ─── 令牌生成 ───
 generate_token() { head -c 32 /dev/urandom | base64 | tr -d '+/=' | head -c 48; }
@@ -88,7 +87,7 @@ check_tun() {
         warn "/dev/net/tun 不存在, 尝试加载 tun 模块..."
         modprobe tun 2>/dev/null || true
         if [ ! -c /dev/net/tun ]; then
-            err "无法加载 tun 模块。请确保 VPS 支持 TUN/TAP (OpenVZ/LXC 需在面板开启)"
+            err "无法加载 tun 模块。请确保 VPS 支持 TUN/TAP"
         fi
     fi
     if [ ! -e /dev/net/tun ]; then
@@ -111,7 +110,6 @@ SYSCTL
 # ─── 防火墙 ───
 setup_firewall() {
     local ports="$AIMILI_PORT"
-    [ -n "$XMILI_PORT" ] && ports="$ports $XMILI_PORT"
     log "配置防火墙端口: $ports"
     if command -v ufw >/dev/null 2>&1; then
         for p in $ports; do ufw allow "$p/tcp" 2>/dev/null || true; done
@@ -128,6 +126,17 @@ setup_firewall() {
     fi
 }
 
+# ─── 二进制下载辅助 ───
+download_and_extract() {
+    local url="$1" local_bin="$2" local_name="$3" local_archive="$4"
+    log "下载 ${local_name} (${ARCH})..."
+    curl -fL --progress-bar -o "$local_archive" "$url" || return 1
+    tar xzf "$local_archive" -C "$INSTALL_DIR"
+    rm -f "$local_archive"
+    chmod +x "$local_bin"
+    log "${local_name} 安装完成"
+}
+
 # ─── 二进制部署 ───
 deploy_binary() {
     log "=== 二进制部署模式 ==="
@@ -137,26 +146,51 @@ deploy_binary() {
 
     mkdir -p "$INSTALL_DIR" "$DATA_DIR" "$XMILI_DIR" "$XMILI_DB"
 
+    local tmp_dir=$(mktemp -d)
+    trap "rm -rf $tmp_dir" EXIT
+
     # ─── 下载 aimili-vpngate 二进制 ───
+    # Release asset: aimilivpn-linux-${ARCH}.tar.gz → aimilivpn binary
     local aimili_bin="$INSTALL_DIR/aimili-vpngate"
     if [ ! -f "$aimili_bin" ] || [ "${FORCE_UPDATE:-}" = "1" ]; then
-        log "下载 aimili-vpngate 二进制 ($ARCH)..."
-        local aimili_url="${RELEASE_URL}/aimili-vpngate-${ARCH}"
-        curl -fL --progress-bar -o "$aimili_bin" "$aimili_url" || err "下载 aimili-vpngate 失败"
+        local aimili_archive="${tmp_dir}/aimilivpn-linux-${ARCH}.tar.gz"
+        local aimili_url="${RELEASE_URL}/aimilivpn-linux-${ARCH}.tar.gz"
+        if ! curl -fL --progress-bar -o "$aimili_archive" "$aimili_url"; then
+            err "下载 aimili-vpngate 失败 (${aimili_url})"
+        fi
+        tar xzf "$aimili_archive" -C "$tmp_dir"
+        local extracted_bin=$(find "$tmp_dir" -name "aimilivpn" -type f 2>/dev/null | head -1)
+        if [ -z "$extracted_bin" ]; then
+            extracted_bin="$tmp_dir/aimilivpn"
+        fi
+        mv "$extracted_bin" "$aimili_bin" 2>/dev/null || cp "$tmp_dir/aimilivpn" "$aimili_bin"
         chmod +x "$aimili_bin"
+        rm -f "$aimili_archive" "$tmp_dir/aimilivpn" "$tmp_dir/version.txt" 2>/dev/null
+        log "aimili-vpngate 安装完成"
     fi
 
     # ─── 下载 X-MILI 集成版二进制 ───
+    # Release asset: x-mili-integrated-linux-${ARCH}.tar.gz → x-mili-integrated binary
     local xmili_bin="$XMILI_DIR/x-ui"
     if [ ! -f "$xmili_bin" ] || [ "${FORCE_UPDATE:-}" = "1" ]; then
-        log "下载 X-MILI 集成版二进制 ($ARCH)..."
-        local xmili_url="${RELEASE_URL}/x-mili-integrated-${ARCH}"
-        curl -fL --progress-bar -o "$xmili_bin" "$xmili_url" || {
+        local xmili_archive="${tmp_dir}/x-mili-integrated-linux-${ARCH}.tar.gz"
+        local xmili_url="${RELEASE_URL}/x-mili-integrated-linux-${ARCH}.tar.gz"
+        if curl -fL --progress-bar -o "$xmili_archive" "$xmili_url"; then
+            tar xzf "$xmili_archive" -C "$tmp_dir"
+            local extracted_bin=$(find "$tmp_dir" -name "x-mili-integrated" -type f 2>/dev/null | head -1)
+            if [ -z "$extracted_bin" ]; then
+                extracted_bin="$tmp_dir/x-mili-integrated"
+            fi
+            mv "$extracted_bin" "$xmili_bin" 2>/dev/null || cp "$tmp_dir/x-mili-integrated" "$xmili_bin"
+            chmod +x "$xmili_bin"
+            rm -f "$xmili_archive" "$tmp_dir/x-mili-integrated" 2>/dev/null
+            log "X-MILI 集成版安装完成"
+        else
             warn "未找到预构建的 X-MILI 集成版二进制，尝试使用标准版..."
             local xmili_std_url="https://github.com/Aimilibot/X-MILI/releases/latest/download/x-ui-${ARCH}"
             curl -fL --progress-bar -o "$xmili_bin" "$xmili_std_url" || err "下载 X-MILI 失败。请使用 Docker 部署模式。"
-        }
-        chmod +x "$xmili_bin"
+            chmod +x "$xmili_bin"
+        fi
     fi
 
     # ─── 生成配置 ───
@@ -236,12 +270,12 @@ show_binary_info() {
     echo ""
     echo "  查看 X-MILI 面板信息:"
     echo "    journalctl -u x-mili --no-pager | grep -E '面板|登录|密码|端口'"
-    echo "    ml settings"
+    echo "    x-ui settings"
     echo ""
     echo "  管理命令:"
     echo "    systemctl status aimili-vpngate x-mili"
     echo "    systemctl restart aimili-vpngate x-mili"
-    echo "    ml          # X-MILI 管理菜单"
+    echo "    x-ui        # X-MILI 管理菜单"
     echo ""
     echo "  令牌文件: ${INSTALL_DIR}/.xmili_token"
     echo "================================================"
@@ -283,52 +317,116 @@ deploy_docker() {
 X_MILI_TOKEN=${X_MILI_TOKEN}
 AIMILI_PORT=${AIMILI_PORT}
 AIMILI_PROXY_PORT=${AIMILI_PROXY_PORT}
-XMILI_PORT=${XMILI_PORT}
 ENV
 
     # ─── 创建 docker-compose 文件 ───
     local compose_file="$INSTALL_DIR/docker-compose.yml"
-    local compose_url="${REPO}/main/docker-compose.x-mili.yml"
 
-    # 如果本地有源码则直接复制，否则从 GitHub 下载
-    if [ -f "$(dirname "$0")/../docker-compose.x-mili.yml" ]; then
-        cp "$(dirname "$0")/../docker-compose.x-mili.yml" "$compose_file"
-    else
-        log "下载 docker-compose 文件..."
-        curl -fL --progress-bar -o "$compose_file" "$compose_url"
-    fi
+    # 如果有 Docker 则用镜像模式，否则下载 docker-compose 文件用 build 模式
+    cat > "$compose_file" <<'COMPOSE'
+services:
+  aimilivpn:
+    image: ghcr.io/xiaoxinkeji/aimili-vpngate:latest
+    container_name: aimilivpn
+    restart: unless-stopped
+    network_mode: host
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    environment:
+      - VPNGATE_DATA_DIR=/opt/aimilivpn/vpngate_data
+      - LOCAL_PROXY_HOST=127.0.0.1
+      - LOCAL_PROXY_PORT=${AIMILI_PROXY_PORT:-7928}
+      - UI_HOST=::
+      - UI_PORT=${AIMILI_PORT:-8787}
+      - X_MILI_TOKEN=${X_MILI_TOKEN}
+    volumes:
+      - aimili_data:/opt/aimilivpn/vpngate_data
+    tmpfs:
+      - /tmp:exec
+    sysctls:
+      - net.ipv4.conf.all.rp_filter=2
+      - net.ipv4.conf.default.rp_filter=2
+      - net.ipv4.ip_forward=1
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pgrep -f vpngate_manager.py > /dev/null && curl -sf --max-time 5 http://localhost:${AIMILI_PORT:-8787}/ > /dev/null || exit 1
+      interval: 30s
+      timeout: 10s
+      start_period: 90s
+      retries: 3
+
+  xmili:
+    image: ghcr.io/xiaoxinkeji/x-mili-integrated:latest
+    container_name: xmili
+    restart: unless-stopped
+    network_mode: host
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    environment:
+      - XRAY_VMESS_AEAD_FORCED=false
+      - XUI_ENABLE_FAIL2BAN=false
+      - AIMILI_NODE_API=http://127.0.0.1:${AIMILI_PORT:-8787}
+      - X_MILI_TOKEN=${X_MILI_TOKEN}
+    volumes:
+      - xmili_db:/etc/x-ui/
+      - xmili_cert:/root/cert/
+    tty: true
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
+    depends_on:
+      aimilivpn:
+        condition: service_healthy
+
+volumes:
+  aimili_data:
+  xmili_db:
+  xmili_cert:
+COMPOSE
+
+    # ─── 确保 env 变量传递给 docker compose ───
+    export AIMILI_PORT AIMILI_PROXY_PORT X_MILI_TOKEN
 
     # ─── 启动服务 ───
     cd "$INSTALL_DIR"
     log "拉取镜像并启动服务..."
-    X_MILI_TOKEN="$X_MILI_TOKEN" $COMPOSE_CMD up -d
+    $COMPOSE_CMD up -d
 
     # ─── 输出面板信息 ───
     show_docker_info
 }
 
 show_docker_info() {
-    local compose_cmd="docker compose"
-    docker compose version >/dev/null 2>&1 || compose_cmd="docker-compose"
-
     echo ""
     echo "================================================"
-    echo "  AimiliVPN + X-MILI (Docker) 部署完成!"
+    echo "  AimiliVPN + X-MILI 部署完成!"
     echo "================================================"
     echo ""
     echo "  AimiliVPN 面板: http://<服务器IP>:${AIMILI_PORT}/"
-    echo "  AimiliVPN 代理: http://127.0.0.1:${AIMILI_PROXY_PORT}"
     echo ""
-    echo "  查看面板登录信息:"
-    echo "    docker logs aimilivpn | grep '管理后台'"
-    echo "    docker logs xmili | grep -E '面板|登录|密码'"
+    echo "  查看 X-MILI 面板信息:"
+    echo "    docker compose -f ${INSTALL_DIR}/docker-compose.yml logs xmili | grep -E '面板|登录|密码|端口'"
+    echo "    docker compose -f ${INSTALL_DIR}/docker-compose.yml exec xmili x-ui settings"
     echo ""
     echo "  管理命令:"
-    echo "    cd ${INSTALL_DIR}"
-    echo "    ${compose_cmd} ps"
-    echo "    ${compose_cmd} logs -f aimilivpn"
-    echo "    ${compose_cmd} logs -f xmili"
-    echo "    ${compose_cmd} restart"
+    echo "    docker compose -f ${INSTALL_DIR}/docker-compose.yml ps"
+    echo "    docker compose -f ${INSTALL_DIR}/docker-compose.yml logs -f"
+    echo "    docker compose -f ${INSTALL_DIR}/docker-compose.yml restart"
     echo ""
     echo "  令牌文件: ${INSTALL_DIR}/.xmili_token"
     echo "================================================"
@@ -336,130 +434,106 @@ show_docker_info() {
 
 # ─── 更新 ───
 do_update() {
-    log "更新部署..."
+    log "更新 AimiliVPN + X-MILI..."
     if [ -f "$INSTALL_DIR/docker-compose.yml" ]; then
+        log "Docker 模式更新..."
         cd "$INSTALL_DIR"
-        local compose_cmd="docker compose"
-        docker compose version >/dev/null 2>&1 || compose_cmd="docker-compose"
-        $compose_cmd pull
-        $compose_cmd up -d
-        log "Docker 更新完成"
-    elif [ -f /etc/systemd/system/aimili-vpngate.service ]; then
+        if [ -f "$INSTALL_DIR/.xmili_token" ]; then
+            export X_MILI_TOKEN=$(cat "$INSTALL_DIR/.xmili_token")
+        fi
+        export AIMILI_PORT AIMILI_PROXY_PORT
+        local COMPOSE_CMD="docker compose"
+        if ! docker compose version >/dev/null 2>&1; then
+            COMPOSE_CMD="docker-compose"
+        fi
+        $COMPOSE_CMD pull
+        $COMPOSE_CMD up -d --force-recreate
+        log "更新完成!"
+    elif systemctl is-active --quiet aimili-vpngate 2>/dev/null; then
+        log "二进制模式更新..."
         FORCE_UPDATE=1 deploy_binary
-        log "二进制更新完成"
     else
-        err "未找到已有部署，请使用 install 命令。"
+        warn "未检测到已安装的服务。请先运行安装脚本。"
     fi
 }
 
 # ─── 卸载 ───
 do_uninstall() {
-    warn "即将卸载 AimiliVPN + X-MILI，数据将保留在:"
-    warn "  ${DATA_DIR}"
-    warn "  ${XMILI_DB}"
-    read -rp "确认卸载? [y/N]: " confirm
-    [[ "$confirm" != "y" && "$confirm" != "Y" ]] && exit 0
-
-    if [ -f "$INSTALL_DIR/docker-compose.yml" ]; then
-        cd "$INSTALL_DIR"
-        local compose_cmd="docker compose"
-        docker compose version >/dev/null 2>&1 || compose_cmd="docker-compose"
-        $compose_cmd down -v 2>/dev/null || true
-    fi
+    warn "即将卸载 AimiliVPN + X-MILI 并删除所有数据!"
+    echo -n "确认卸载? [y/N] "; read -r confirm
+    [ "$confirm" != "y" ] && [ "$confirm" != "Y" ] && exit 0
 
     systemctl stop aimili-vpngate x-mili 2>/dev/null || true
     systemctl disable aimili-vpngate x-mili 2>/dev/null || true
     rm -f /etc/systemd/system/aimili-vpngate.service /etc/systemd/system/x-mili.service
-    systemctl daemon-reload 2>/dev/null || true
+    systemctl daemon-reload
 
+    if command -v docker >/dev/null 2>&1; then
+        local COMPOSE_CMD="docker compose"
+        if ! docker compose version >/dev/null 2>&1; then COMPOSE_CMD="docker-compose"; fi
+        if [ -f "$INSTALL_DIR/docker-compose.yml" ]; then
+            cd "$INSTALL_DIR" && $COMPOSE_CMD down -v 2>/dev/null || true
+        fi
+    fi
+
+    rm -rf "$INSTALL_DIR"
     rm -f /etc/sysctl.d/99-aimili-xmili.conf
-    sysctl -p >/dev/null 2>&1 || true
-
-    log "卸载完成。数据目录保留: ${DATA_DIR}, ${XMILI_DB}"
-    log "如需彻底清理: rm -rf ${DATA_DIR} ${XMILI_DB} ${INSTALL_DIR}"
+    log "卸载完成。"
 }
 
-# ─── 显示状态 ───
-do_status() {
-    echo "=== AimiliVPN + X-MILI 部署状态 ==="
+# ─── 状态 ───
+show_status() {
     echo ""
-    if [ -f /etc/systemd/system/aimili-vpngate.service ]; then
-        echo "--- aimili-vpngate (systemd) ---"
-        systemctl status aimili-vpngate --no-pager -l 2>/dev/null || echo "  未运行"
+    echo "=== AimiliVPN + X-MILI 状态 ==="
+    echo ""
+    if systemctl is-active --quiet aimili-vpngate 2>/dev/null; then
+        echo -e "  aimili-vpngate service: ${GR}active${NC}"
+        echo "  API: http://127.0.0.1:${AIMILI_PORT}/api/nodes"
+    elif docker ps --format '{{.Names}}' 2>/dev/null | grep -q aimilivpn; then
+        echo -e "  aimili-vpngate container: ${GR}running${NC}"
+        echo "  API: http://127.0.0.1:${AIMILI_PORT}/api/nodes"
+    else
+        echo -e "  aimili-vpngate: ${RD}not running${NC}"
     fi
-    if [ -f /etc/systemd/system/x-mili.service ]; then
-        echo "--- x-mili (systemd) ---"
-        systemctl status x-mili --no-pager -l 2>/dev/null || echo "  未运行"
+    echo ""
+    if systemctl is-active --quiet x-mili 2>/dev/null; then
+        echo -e "  x-mili service: ${GR}active${NC}"
+    elif docker ps --format '{{.Names}}' 2>/dev/null | grep -q xmili; then
+        echo -e "  x-mili container: ${GR}running${NC}"
+    else
+        echo -e "  x-mili: ${RD}not running${NC}"
     fi
-    if [ -f "$INSTALL_DIR/docker-compose.yml" ]; then
-        cd "$INSTALL_DIR"
-        local compose_cmd="docker compose"
-        docker compose version >/dev/null 2>&1 || compose_cmd="docker-compose"
-        echo "--- Docker 容器 ---"
-        $compose_cmd ps 2>/dev/null
-    fi
+    echo ""
     if [ -f "$INSTALL_DIR/.xmili_token" ]; then
-        echo "X_MILI_TOKEN: $(cat "$INSTALL_DIR/.xmili_token")"
+        echo "  Token: $(cat "$INSTALL_DIR/.xmili_token")"
     fi
+    echo ""
 }
 
-# ─── 帮助 ───
-do_help() {
-    echo "用法: $0 [命令]"
-    echo ""
-    echo "命令:"
-    echo "  install      安装 (自动检测 Docker, 无 Docker 则二进制)"
-    echo "  install --docker   强制 Docker 模式"
-    echo "  install --binary   强制二进制模式"
-    echo "  update       更新到最新版本"
-    echo "  uninstall    卸载 (保留数据)"
-    echo "  status       查看部署状态"
-    echo "  help         显示此帮助"
-    echo ""
-    echo "环境变量:"
-    echo "  AIMILI_PORT         AimiliVPN Web 端口 (默认 8787)"
-    echo "  AIMILI_PROXY_PORT   AimiliVPN 代理端口 (默认 7928)"
-    echo "  XMILI_PORT          X-MILI Web 端口 (仅 Docker 模式)"
-}
+# ─── 主流程 ───
+MODE="auto"
+case "${1:-}" in
+    --docker|-d)  MODE="docker" ;;
+    --binary|-b)  MODE="binary" ;;
+    --update|-u)  do_update; exit 0 ;;
+    --uninstall)  do_uninstall; exit 0 ;;
+    --status|-s)  show_status; exit 0 ;;
+    --help|-h)    echo "用法: $0 [--docker|--binary|--update|--uninstall|--status]"; exit 0 ;;
+esac
 
-# ─── 主入口 ───
 detect_os
 
-MODE="auto"
-ACTION="install"
+if [ "$MODE" = "auto" ]; then
+    if command -v docker >/dev/null 2>&1 && (docker compose version >/dev/null 2>&1 || docker-compose version >/dev/null 2>&1); then
+        MODE="docker"
+        log "自动检测到 Docker, 使用 Docker 部署模式"
+    else
+        MODE="binary"
+        log "未检测到 Docker, 使用二进制部署模式"
+    fi
+fi
 
-for arg in "$@"; do
-    case "$arg" in
-        --docker) MODE="docker" ;;
-        --binary) MODE="binary" ;;
-        install)   ACTION="install" ;;
-        update)    ACTION="update" ;;
-        uninstall) ACTION="uninstall" ;;
-        status)    ACTION="status" ;;
-        help|--help|-h) ACTION="help" ;;
-    esac
-done
-
-case "$ACTION" in
-    install)
-        if [ "$MODE" = "docker" ]; then
-            deploy_docker
-        elif [ "$MODE" = "binary" ]; then
-            deploy_binary
-        else
-            # 自动模式: 检测 Docker
-            if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
-                log "检测到 Docker, 使用 Docker 部署模式"
-                deploy_docker
-            else
-                log "未检测到 Docker, 使用二进制部署模式"
-                deploy_binary
-            fi
-        fi
-        ;;
-    update)    do_update ;;
-    uninstall) do_uninstall ;;
-    status)    do_status ;;
-    help)      do_help ;;
-    *)         do_help ;;
+case "$MODE" in
+    docker) deploy_docker ;;
+    binary) deploy_binary ;;
 esac
