@@ -139,6 +139,7 @@ BLACKLIST_FILE = DATA_DIR / "blacklist.json"
 
 lock = threading.RLock()
 maintenance_lock = threading.Lock()
+_recovery_thread_running = False
 active_sessions: dict[str, float] = {}
 active_openvpn_process: subprocess.Popen[str] | None = None
 active_openvpn_node_id = ""
@@ -355,11 +356,13 @@ def log_to_json(level: str, module: str, message: str) -> None:
 
 def set_state(**updates: Any) -> None:
     global is_connecting
-    state = get_state()
-    state.update(updates)
-    if "is_connecting" in updates:
-        is_connecting = updates["is_connecting"]
-    write_json(STATE_FILE, state)
+    with lock:
+        state = read_json(STATE_FILE, {})
+        state.update(updates)
+        if "is_connecting" in updates:
+            is_connecting = updates["is_connecting"]
+        with open(STATE_FILE, "w", encoding="utf-8") as f:
+            json.dump(state, f, ensure_ascii=False, indent=2)
 
 def read_nodes() -> list[dict[str, Any]]:
     raw = read_json(NODES_FILE, [])
@@ -1634,15 +1637,19 @@ def auto_switch_node(attempt: int = 0) -> None:
         set_state(active_openvpn_node_id="", last_check_message=msg)
         
         def bg_fetch_and_switch():
+            global _recovery_thread_running
             try:
-                # 避免所有节点不可用时连续拉取/测试导致 CPU 与 tun 网卡风暴。
                 time.sleep(60)
                 maintain_valid_nodes(force=False)
                 auto_switch_node(attempt + 1)
             except Exception as e:
                 print(f"[自动切换后台补齐] 获取并测试节点失败: {e}", flush=True)
-        
-        threading.Thread(target=bg_fetch_and_switch, daemon=True).start()
+            finally:
+                _recovery_thread_running = False
+
+        if not _recovery_thread_running:
+            _recovery_thread_running = True
+            threading.Thread(target=bg_fetch_and_switch, daemon=True).start()
 
 def connect_node(node_id: str) -> str:
     global active_openvpn_process, active_openvpn_node_id, is_connecting
@@ -1803,9 +1810,11 @@ def maintain_valid_nodes(force: bool = False) -> str:
                             stop_active_openvpn()
                     if has_active_id:
                         print("[维护线程] 检测到当前 OpenVPN 进程已意外退出，准备自动切换节点", flush=True)
-                        is_connecting = False
+                        with lock:
+                            is_connecting = False
                         auto_switch_node()
-                        is_connecting = True
+                        with lock:
+                            is_connecting = True
 
         try:
             set_state(is_connecting=True, last_check_message="正在拉取最新的免费 VPN 节点列表...")
@@ -1955,7 +1964,8 @@ def maintain_valid_nodes(force: bool = False) -> str:
                     available_candidates = apply_routing_filters(available_candidates, ui_cfg)
 
                 if available_candidates:
-                    is_connecting = False
+                    with lock:
+                        is_connecting = False
                     set_state(is_connecting=False, last_check_message="快速首连已找到可用节点，正在建立连接...")
                     auto_switch_node()
                     if active_openvpn_running():
@@ -1968,7 +1978,8 @@ def maintain_valid_nodes(force: bool = False) -> str:
                             valid_nodes=valid_nodes_count,
                         )
                         return message
-                    is_connecting = True
+                    with lock:
+                        is_connecting = True
 
         # Test remaining non-active nodes from the list
         with lock:
@@ -1985,7 +1996,8 @@ def maintain_valid_nodes(force: bool = False) -> str:
         
         set_state(is_connecting=True, last_check_message="正在并发检测所有节点可用性...")
         test_multiple_nodes(to_test_ids)
-        is_connecting = False
+        with lock:
+            is_connecting = False
         
         with lock:
             merged = read_nodes()
@@ -2031,8 +2043,6 @@ def maintain_valid_nodes(force: bool = False) -> str:
             valid_nodes=valid_nodes_count,
         )
         return message
-    except Exception as e:
-        raise
     finally:
         is_connecting = False
         if _lock_held:
@@ -5755,13 +5765,12 @@ class Handler(BaseHTTPRequestHandler):
                 if not maintenance_lock.acquire(blocking=False):
                     self.send_json({"ok": False, "error": "当前已有连接或节点维护任务正在运行，请稍后再试"}, HTTPStatus.CONFLICT)
                     return
-                with lock:
-                    if is_connecting:
-                        maintenance_lock.release()
-                        self.send_json({"ok": False, "error": "当前已有连接或节点维护任务正在运行，请稍后再试"}, HTTPStatus.CONFLICT)
-                        return
-                    is_connecting = True
                 try:
+                    with lock:
+                        if is_connecting:
+                            self.send_json({"ok": False, "error": "当前已有连接或节点维护任务正在运行，请稍后再试"}, HTTPStatus.CONFLICT)
+                            return
+                        is_connecting = True
                     set_state(is_connecting=True, last_check_message="正在手动测试节点可用性...")
                     tested_nodes = test_multiple_nodes(node_ids)
                     self.send_json({"ok": True, "nodes": tested_nodes})
@@ -5810,13 +5819,12 @@ class Handler(BaseHTTPRequestHandler):
                 if not maintenance_lock.acquire(blocking=False):
                     self.send_json({"ok": False, "error": "当前已有连接或节点维护任务正在运行，请稍后再试"}, HTTPStatus.CONFLICT)
                     return
-                with lock:
-                    if is_connecting:
-                        maintenance_lock.release()
-                        self.send_json({"ok": False, "error": "当前已有连接或节点维护任务正在运行，请稍后再试"}, HTTPStatus.CONFLICT)
-                        return
-                    is_connecting = True
                 try:
+                    with lock:
+                        if is_connecting:
+                            self.send_json({"ok": False, "error": "当前已有连接或节点维护任务正在运行，请稍后再试"}, HTTPStatus.CONFLICT)
+                            return
+                        is_connecting = True
                     set_state(is_connecting=True, last_check_message="正在手动测试节点可用性...")
                     updated_node = test_node_by_id(node_id)
                     self.send_json({"ok": True, "node": updated_node})
