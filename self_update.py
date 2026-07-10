@@ -50,8 +50,8 @@ def check_update() -> dict[str, str | None]:
     """检查 GitHub 是否有新版本。返回 {"latest": tag, "url": download_url} 或空。"""
     global _latest_version, _latest_url, _last_check
 
-    now = time.time()
     with _check_lock:
+        now = time.time()
         if now - _last_check < CHECK_INTERVAL and _latest_version:
             return {"latest": _latest_version, "url": _latest_url}
         _last_check = now

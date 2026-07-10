@@ -129,7 +129,7 @@ UI_PORT = env_int("UI_PORT", 8787, 1, 65535)
 INVALID_BACKOFF_SECONDS = env_int("INVALID_BACKOFF_SECONDS", 30 * 60, 1)
 
 ROOT_DIR = Path(sys.executable).resolve().parent if globals().get("__compiled__") else Path(__file__).resolve().parent
-DATA_DIR = Path(os.environ["VPNGATE_DATA_DIR"].strip()).resolve() if os.environ.get("VPNGATE_DATA_DIR", "").strip() else ROOT_DIR / "vpngate_data"
+DATA_DIR = vpn_utils.DATA_DIR
 CONFIG_DIR = DATA_DIR / "configs"
 NODES_FILE = DATA_DIR / "nodes.json"
 STATE_FILE = DATA_DIR / "state.json"

@@ -49,12 +49,18 @@ def parse_host_port(authority: str, default_port: int) -> tuple[str, int]:
         return host, parse_int(port_text) or default_port
     return authority, default_port
 
+_cached_credentials: list[tuple[str | None, str | None] | None] = [None]
+
 def get_proxy_credentials() -> tuple[str | None, str | None]:
+    if _cached_credentials[0] is not None:
+        return _cached_credentials[0]
     user = os.environ.get("LOCAL_PROXY_USER") or os.environ.get("LOCAL_PROXY_USERNAME")
     password = os.environ.get("LOCAL_PROXY_PASS") or os.environ.get("LOCAL_PROXY_PASSWORD")
     if user is None and password is None:
-        return None, None
-    return user or "", password or ""
+        _cached_credentials[0] = (None, None)
+    else:
+        _cached_credentials[0] = (user or "", password or "")
+    return _cached_credentials[0]
 
 def proxy_auth_enabled() -> bool:
     user, password = get_proxy_credentials()

@@ -126,6 +126,7 @@ EXIT_CODE=$?
 # 清理 metrics exporter
 if [ -n "$METRICS_PID" ] && kill -0 "$METRICS_PID" 2>/dev/null; then
     kill -TERM "$METRICS_PID" 2>/dev/null || true
+    wait "$METRICS_PID" 2>/dev/null || true
 fi
 
 echo -e "${YELLOW}[aimilivpn] 主进程退出 (code: $EXIT_CODE)${PLAIN}"
