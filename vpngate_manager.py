@@ -147,6 +147,16 @@ is_connecting = False
 last_active_ping_time = 0.0
 last_active_latency = 0
 
+def _check_tun() -> bool:
+    try:
+        fd = os.open("/dev/net/tun", os.O_RDWR)
+        os.close(fd)
+        return True
+    except OSError:
+        return False
+
+TUN_AVAILABLE = _check_tun()
+
 X_MILI_TOKEN = os.environ.get("X_MILI_TOKEN", "")
 
 last_collector_heartbeat = 0.0
@@ -761,6 +771,9 @@ def row_to_node(row: dict[str, str], config_text: str) -> dict[str, Any]:
     }
 
 def fetch_candidates() -> list[dict[str, Any]]:
+    if not TUN_AVAILABLE:
+        print("[fetch_candidates] TUN 不可用，跳过 vpngate.net API 拉取，使用 publicvpnlist 节点", flush=True)
+        return []
     blacklist = load_blacklist()
     candidates: list[dict[str, Any]] = []
     seen_ips = set()
@@ -923,6 +936,9 @@ def openvpn_command(config_file: str, route_nopull: bool, dev: str = "tun0") -> 
             "tun",
             "--pull-filter",
             "ignore",
+            "dev",
+            "--pull-filter",
+            "ignore",
             "route-ipv6",
             "--pull-filter",
             "ignore",
@@ -968,6 +984,8 @@ def openvpn_command(config_file: str, route_nopull: bool, dev: str = "tun0") -> 
         
     if route_nopull:
         command.append("--route-nopull")
+    if not TUN_AVAILABLE:
+        command.extend(["--ifconfig-noexec", "--pull-filter", "ignore", "redirect-gateway", "--pull-filter", "ignore", "dhcp-option"])
     return command
 
 def stop_process(process: subprocess.Popen[str] | None) -> None:
@@ -1151,6 +1169,8 @@ def run_openvpn_until_ready(config_file: str, keep_alive: bool, route_nopull: bo
 
 
 def setup_policy_routing(interface: str = "tun0") -> None:
+    if not TUN_AVAILABLE:
+        return
     try:
         subprocess.run(["ip", "rule", "del", "table", "100"], capture_output=True, timeout=2)
     except Exception:
@@ -1402,6 +1422,53 @@ def test_node_by_id(node_id: str) -> dict[str, Any]:
         if not node:
             raise ValueError(f"Node not found: {node_id}")
         config_text = node.get("config_text") or ""
+        config_url = str(node.get("config_url", "")).strip()
+        if (not config_text or not config_text.strip()) and config_url:
+            try:
+                sid_match = re.search(r"/download/(\d+)/?", config_url)
+                if sid_match:
+                    sid = sid_match.group(1)
+                    print(f"[config] 获取令牌: server_id={sid}", flush=True)
+                    token_url = f"{config_url.rsplit('/download/', 1)[0]}/get_token.php?id={sid}"
+                    req = urllib.request.Request(token_url)
+                    with urllib.request.urlopen(req, timeout=10) as resp:
+                        token_data = json.loads(resp.read().decode("utf-8"))
+                    token = token_data.get("token", "")
+                    if token:
+                        dl_url = f"{config_url.rsplit('/download/', 1)[0]}/download.php?token={token}"
+                        print(f"[config] 下载配置: {dl_url}", flush=True)
+                        req = urllib.request.Request(dl_url)
+                        with urllib.request.urlopen(req, timeout=10) as resp:
+                            config_text = resp.read().decode("utf-8", errors="replace")
+                else:
+                    print(f"[config] 下载节点配置: {config_url}", flush=True)
+                    req = urllib.request.Request(config_url)
+                    with urllib.request.urlopen(req, timeout=10) as resp:
+                        raw = resp.read()
+                        try:
+                            config_text = raw.decode("utf-8")
+                        except UnicodeDecodeError:
+                            import base64
+                            config_text = base64.b64decode(raw).decode("utf-8")
+                if config_text and config_text.strip():
+                    config_text = re.sub(r'(?m)^(dev|persist-tun)\s+.*\n?', '', config_text)
+                    with lock:
+                        nodes = read_nodes()
+                        for n in nodes:
+                            if n.get("id") == node_id:
+                                n["config_text"] = config_text
+                                conf_path = CONFIG_DIR / f"{node_id}.ovpn"
+                                try:
+                                    conf_path.parent.mkdir(exist_ok=True, parents=True)
+                                    conf_path.write_text(config_text, encoding="utf-8")
+                                except Exception:
+                                    pass
+                                n["config_file"] = str(conf_path)
+                        write_json(NODES_FILE, nodes)
+            except Exception as exc:
+                print(f"[config] 下载失败: {exc}", flush=True)
+        if not config_text or not config_text.strip():
+            raise RuntimeError(f"节点配置无效或下载失败: {config_url}")
         h = str(node.get("remote_host") or node.get("ip"))
         p = parse_int(node.get("remote_port"))
         fallback_ping = parse_int(node.get("ping"))
@@ -1418,7 +1485,8 @@ def test_node_by_id(node_id: str) -> dict[str, Any]:
     idx = None
     try:
         idx = get_free_test_index()
-        ok, message, _ = run_openvpn_until_ready(str(temp_path), keep_alive=False, route_nopull=True, timeout=12, dev=f"tun{idx}")
+        use_dev = "null" if not TUN_AVAILABLE else f"tun{idx}"
+        ok, message, _ = run_openvpn_until_ready(str(temp_path), keep_alive=False, route_nopull=True, timeout=12, dev=use_dev)
     finally:
         if idx is not None:
             release_test_index(idx)
@@ -1482,6 +1550,60 @@ def test_multiple_nodes(node_ids: list[str]) -> list[dict[str, Any]]:
         idx, n_info = args
         node_id = n_info["id"]
         config_text = n_info.get("config_text") or ""
+        config_file = n_info.get("config_file") or ""
+        if not config_text or not config_text.strip():
+            config_url = str(n_info.get("config_url", "")).strip()
+            if config_url:
+                try:
+                    sid_match = re.search(r"/download/(\d+)/?", config_url)
+                    if sid_match:
+                        sid = sid_match.group(1)
+                        token_url = f"{config_url.rsplit('/download/', 1)[0]}/get_token.php?id={sid}"
+                        req = urllib.request.Request(token_url)
+                        with urllib.request.urlopen(req, timeout=10) as resp:
+                            token_data = json.loads(resp.read().decode("utf-8"))
+                        token = token_data.get("token", "")
+                        if token:
+                            dl_url = f"{config_url.rsplit('/download/', 1)[0]}/download.php?token={token}"
+                            req = urllib.request.Request(dl_url)
+                            with urllib.request.urlopen(req, timeout=10) as resp:
+                                config_text = resp.read().decode("utf-8", errors="replace")
+                    else:
+                        req = urllib.request.Request(config_url)
+                        with urllib.request.urlopen(req, timeout=10) as resp:
+                            raw = resp.read()
+                            try:
+                                config_text = raw.decode("utf-8")
+                            except UnicodeDecodeError:
+                                import base64
+                                config_text = base64.b64decode(raw).decode("utf-8")
+                    if config_text and config_text.strip():
+                        config_text = re.sub(r'(?m)^(dev|persist-tun)\s+.*\n?', '', config_text)
+                        conf_path = CONFIG_DIR / f"{node_id}.ovpn"
+                        try:
+                            conf_path.parent.mkdir(exist_ok=True, parents=True)
+                            conf_path.write_text(config_text, encoding="utf-8")
+                            config_file = str(conf_path)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+        if config_text and config_text.strip():
+            config_text = re.sub(r'(?m)^(dev|persist-tun)\s+.*\n?', '', config_text)
+        if not config_text or not config_text.strip():
+            return {
+                "id": node_id,
+                "latency_ms": 0,
+                "probe_status": "unavailable",
+                "probe_message": "缺少 OpenVPN 配置文件 (config_url 下载失败或无配置数据)",
+                "probed_at": time.time(),
+                "owner": "",
+                "asn": "",
+                "as_name": "",
+                "location": "",
+                "ip_type": "",
+                "quality": "",
+            }
         h = str(n_info.get("remote_host") or n_info.get("ip"))
         p = parse_int(n_info.get("remote_port"))
         fallback_ping = parse_int(n_info.get("ping"))
@@ -1509,7 +1631,7 @@ def test_multiple_nodes(node_ids: list[str]) -> list[dict[str, Any]]:
         tun_idx = None
         try:
             tun_idx = get_free_test_index()
-            dev_name = f"tun{tun_idx}"
+            dev_name = "null" if not TUN_AVAILABLE else f"tun{tun_idx}"
             ok, message, _ = run_openvpn_until_ready(str(temp_path), keep_alive=False, route_nopull=True, timeout=12, dev=dev_name)
         finally:
             if tun_idx is not None:
@@ -1535,6 +1657,8 @@ def test_multiple_nodes(node_ids: list[str]) -> list[dict[str, Any]]:
             "location": "",
             "ip_type": "",
             "quality": "",
+            "config_text": config_text or n_info.get("config_text", ""),
+            "config_file": config_file or n_info.get("config_file", ""),
         }
         return temp_node
 
@@ -1696,7 +1820,8 @@ def connect_node(node_id: str) -> str:
             raise RuntimeError(f"Failed to write configuration: {e}")
 
         set_state(active_node_latency="启动核心", last_check_message="正在启动 OpenVPN Core 核心服务并建立连接...")
-        ok, message, process = run_openvpn_until_ready(str(node["config_file"]), keep_alive=True, route_nopull=True)
+        use_dev = "null" if not TUN_AVAILABLE else "tun0"
+        ok, message, process = run_openvpn_until_ready(str(node["config_file"]), keep_alive=True, route_nopull=True, dev=use_dev)
         if not ok or process is None:
             try:
                 if config_path.exists():
@@ -1720,7 +1845,8 @@ def connect_node(node_id: str) -> str:
             active_openvpn_node_id = node_id
         
         set_state(active_node_latency="配置路由", last_check_message="正在配置策略路由规则与流量转发...")
-        setup_policy_routing("tun0")
+        if TUN_AVAILABLE:
+            setup_policy_routing("tun0")
         
         global last_active_ping_time, last_active_latency
         last_active_ping_time = time.time()
@@ -1761,9 +1887,10 @@ def connect_node(node_id: str) -> str:
                 proxy_error=res.get("error", "未知错误")
             )
             
-        latency_str = f"{last_active_latency} ms" if last_active_latency > 0 else "检测超时"
+        latency_str = f"{last_active_latency} ms" if last_active_latency > 0 else ("null-dev" if not TUN_AVAILABLE else "检测超时")
         set_state(active_openvpn_node_id=node_id, is_connecting=False, last_check_message=f"Connected {node_id}", active_node_latency=latency_str)
-        log_to_json("INFO", "VPN", f"节点 {node_id} 连接成功，出口网卡 tun0 已启用")
+        dev_info = "null 协议层" if not TUN_AVAILABLE else "出口网卡 tun0"
+        log_to_json("INFO", "VPN", f"节点 {node_id} 连接成功，{dev_info} 已启用")
         return f"Connected {node_id}"
     except Exception as exc:
         if stopped_existing or (active_openvpn_node_id == node_id and not active_openvpn_running()):
@@ -1873,7 +2000,17 @@ def maintain_valid_nodes(force: bool = False) -> str:
         threading.Thread(target=_fetch_pvl_and_merge, daemon=True).start()
 
         if not candidates:
-            return "没有拉取到新节点"
+            # 等待 PVL 后台线程合并完成
+            pvl_timeout = time.time() + 30
+            while time.time() < pvl_timeout and len(read_nodes()) == 0:
+                time.sleep(1)
+            with lock:
+                all_nodes = read_nodes()
+                if not all_nodes:
+                    return "没有拉取到新节点 (PVL 未返回节点)"
+                candidates = [n for n in all_nodes if n.get("id")]
+                if not candidates:
+                    return "没有拉取到新节点 (PVL 节点数据异常)"
 
         with lock:
             current_nodes = read_nodes()
@@ -1945,7 +2082,7 @@ def maintain_valid_nodes(force: bool = False) -> str:
                 fast_candidates.sort(key=probe_priority_key)
                 fast_test_ids = [
                     n["id"] for n in fast_candidates
-                    if n.get("id") and n.get("config_text")
+                    if n.get("id") and (n.get("config_text") or n.get("config_url"))
                 ][:INITIAL_CONNECT_TEST_LIMIT]
 
             if fast_test_ids:
@@ -1987,7 +2124,7 @@ def maintain_valid_nodes(force: bool = False) -> str:
             current_nodes = read_nodes()
             to_test = [
                 n for n in current_nodes
-                if not n.get("active") and n.get("id") not in initial_tested_ids and n.get("config_text")
+                if not n.get("active") and n.get("id") not in initial_tested_ids and (n.get("config_text") or n.get("config_url"))
             ]
             to_test_ids = [n["id"] for n in to_test]
             
@@ -5807,7 +5944,7 @@ class Handler(BaseHTTPRequestHandler):
         elif effective_path == "/api/connect":
             try:
                 payload = self.read_json_body()
-                self.send_json({"ok": True, "message": connect_node(str(payload.get("id") or ""))})
+                self.send_json({"ok": True, "message": connect_node(str(payload.get("node_id") or payload.get("id") or ""))})
             except Exception as exc:
                 self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
         elif effective_path == "/api/test_node":
@@ -5900,12 +6037,9 @@ class Tee:
 def main() -> None:
     ensure_dirs()
 
-    # 预检 TUN 设备 (二进制部署模式下必需)
-    if not Path("/dev/net/tun").exists():
-        print("[错误] /dev/net/tun 不存在，请确保 tun 内核模块已加载", flush=True)
-        print("  尝试: modprobe tun  或  lsmod | grep tun  检查模块状态", flush=True)
-        print("  如使用 Docker: docker run --device=/dev/net/tun", flush=True)
-        sys.exit(1)
+    # 预检 TUN 设备 (预览模式: 无 TUN 时仅展示 Web UI/API)
+    if not TUN_AVAILABLE:
+        print("[提示] /dev/net/tun 不可用，以 --dev null 协议层模式运行", flush=True)
 
     kill_existing_openvpn_processes()
     
@@ -5925,7 +6059,7 @@ def main() -> None:
             "active_openvpn_node_id": "",
             "last_fetch_status": "starting",
             "last_check_message": "服务已启动，正在初始化网络并获取候选 VPN 节点...",
-            "is_connecting": True,
+            "is_connecting": False,
             "active_node_latency": "正在准备",
             "blacklisted_nodes": 0,
         },
