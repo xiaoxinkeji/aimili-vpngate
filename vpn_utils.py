@@ -593,6 +593,9 @@ def diagnose_openvpn_failure(log_tail: list[str]) -> tuple[int, str]:
         
     if "tls error: tls key negotiation failed" in joined_log or "tls error: tls handshake failed" in joined_log:
         return 2006, "[ERR_OVPN_TLS_BLOCKED] TLS 握手超时/失败。原因: 可能是由于物理链路极差导致握手包丢失，或者受 VPS 防火墙规则/网络监管(如 GFW)深度包检测拦截了 OpenVPN 协议流量。"
+
+    if "tcp connection established" in joined_log and "tls: initial packet" not in joined_log and "tls error" not in joined_log:
+        return 2004, "[ERR_OVPN_NODE_UNREACHABLE] TCP 连接已建立但 TLS 握手未启动即被断开。原因: 远程服务器防火墙/NAT 可能在 TCP 连接后立即重置连接，或协议探测导致对端主动关闭。"
         
     if "connection timed out" in joined_log or "timeout" in joined_log:
         return 2004, "[ERR_OVPN_NODE_UNREACHABLE] 节点连接超时。原因: 远程节点已关机、VPS 本身出站流量被本地防火墙拦截，或者目的 IP:端口遭 ISP/GFW 屏蔽拦截。"
