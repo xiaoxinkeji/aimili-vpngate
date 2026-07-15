@@ -928,6 +928,7 @@ def openvpn_command(config_file: str, route_nopull: bool, dev: str = "tun0") -> 
     command = split_openvpn_command()
     command.extend(
         [
+            "--client",
             "--config",
             config_file,
             "--dev",
@@ -1247,7 +1248,7 @@ def sort_all_nodes(nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
         )
     )
     untested_nodes = sorted(
-        [n for n in nodes if n.get("probe_status") in ("not_checked", "testing") and not n.get("active")],
+        [n for n in nodes if n.get("probe_status") in ("not_checked", "testing", "untested") and not n.get("active")],
         key=lambda n: (-parse_int(n.get("score")), parse_int(n.get("ping")))
     )
     unavailable_nodes = sorted(
@@ -1452,6 +1453,9 @@ def test_node_by_id(node_id: str) -> dict[str, Any]:
                             config_text = base64.b64decode(raw).decode("utf-8")
                 if config_text and config_text.strip():
                     config_text = re.sub(r'(?m)^(dev|persist-tun)\s+.*\n?', '', config_text)
+                    config_text = re.sub(r'(?m)^proto\s+tcp\s*$', 'proto tcp-client', config_text)
+                    if not re.search(r'(?m)^(client|tls-client)\s', config_text):
+                        config_text = 'tls-client\n' + config_text
                     with lock:
                         nodes = read_nodes()
                         for n in nodes:
@@ -1579,6 +1583,9 @@ def test_multiple_nodes(node_ids: list[str]) -> list[dict[str, Any]]:
                                 config_text = base64.b64decode(raw).decode("utf-8")
                     if config_text and config_text.strip():
                         config_text = re.sub(r'(?m)^(dev|persist-tun)\s+.*\n?', '', config_text)
+                        config_text = re.sub(r'(?m)^proto\s+tcp\s*$', 'proto tcp-client', config_text)
+                        if not re.search(r'(?m)^(client|tls-client)\s', config_text):
+                            config_text = 'tls-client\n' + config_text
                         conf_path = CONFIG_DIR / f"{node_id}.ovpn"
                         try:
                             conf_path.parent.mkdir(exist_ok=True, parents=True)
@@ -1590,6 +1597,9 @@ def test_multiple_nodes(node_ids: list[str]) -> list[dict[str, Any]]:
                     pass
         if config_text and config_text.strip():
             config_text = re.sub(r'(?m)^(dev|persist-tun)\s+.*\n?', '', config_text)
+            config_text = re.sub(r'(?m)^proto\s+tcp\s*$', 'proto tcp-client', config_text)
+            if not re.search(r'(?m)^(client|tls-client)\s', config_text):
+                config_text = 'tls-client\n' + config_text
         if not config_text or not config_text.strip():
             return {
                 "id": node_id,
