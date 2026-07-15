@@ -596,6 +596,9 @@ def diagnose_openvpn_failure(log_tail: list[str]) -> tuple[int, str]:
 
     if "tcp connection established" in joined_log and "tls: initial packet" not in joined_log and "tls error" not in joined_log:
         return 2004, "[ERR_OVPN_NODE_UNREACHABLE] TCP 连接已建立但 TLS 握手未启动即被断开。原因: 远程服务器防火墙/NAT 可能在 TCP 连接后立即重置连接，或协议探测导致对端主动关闭。"
+
+    if "udpv4 link remote" in joined_log or "attempting to establish tcp connection" in joined_log:
+        return 2004, "[ERR_OVPN_NODE_UNREACHABLE] 节点无响应。原因: OpenVPN 已发出连接请求但未收到任何回复，远程节点可能已下线或被防火墙屏蔽。"
         
     if "connection timed out" in joined_log or "timeout" in joined_log:
         return 2004, "[ERR_OVPN_NODE_UNREACHABLE] 节点连接超时。原因: 远程节点已关机、VPS 本身出站流量被本地防火墙拦截，或者目的 IP:端口遭 ISP/GFW 屏蔽拦截。"
