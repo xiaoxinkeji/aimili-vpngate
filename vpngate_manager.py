@@ -900,28 +900,72 @@ def get_openvpn_version() -> float:
     _openvpn_version = 2.4
     return _openvpn_version
 
-def _download_node_config(node: dict[str, Any]) -> str:
-    """从 config_url 下载 OpenVPN 配置文件，返回配置文本或空字符串"""
-    url = node.get("config_url", "")
-    if not url:
+def _download_node_config(config_url: str, retry: int = 3, timeout: int = 10) -> str:
+    """下载 OpenVPN 配置文件，支持 PVL token API 和直接 URL 两种方式，返回清洗后的配置文本或空字符串"""
+
+    def _clean(text: str) -> str:
+        text = re.sub(r'(?m)^(dev|persist-tun)\s+.*\n?', '', text)
+        text = re.sub(r'(?m)^proto\s+tcp\s*$', 'proto tcp-client', text)
+        if not re.search(r'(?m)^(client|tls-client)\s', text):
+            text = 'tls-client\n' + text
+        return text
+
+    if not config_url or not config_url.strip():
         return ""
-    try:
-        req = urllib.request.Request(url, headers={"User-Agent": "aimilivpn/1.0"})
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            # publicvpnlist.com 的 /download/{id}/ 返回 text/plain 或直接 .ovpn 内容
-            body = resp.read().decode("utf-8", errors="replace")
-            # 如果是 HTML (下载页), 尝试提取 <code> 或 <pre> 内容
-            if body.strip().startswith("<") and "</" in body:
-                import re as _re
-                m = _re.search(r"<(?:code|pre)[^>]*>(.*?)</(?:code|pre)>", body, _re.DOTALL)
-                if m:
-                    from html import unescape as _unescape
-                    return _unescape(m.group(1).strip())
-                return ""
-            return body.strip()
-    except Exception as e:
-        print(f"[下载配置] {url} 失败: {e}", flush=True)
-        return ""
+
+    last_err = None
+    for attempt in range(retry):
+        try:
+            sid_match = re.search(r"/download/(\d+)/?", config_url)
+            if sid_match:
+                sid = sid_match.group(1)
+                if attempt == 0:
+                    print(f"[config] 获取令牌: server_id={sid}", flush=True)
+                token_url = f"{config_url.rsplit('/download/', 1)[0]}/get_token.php?id={sid}"
+                req = urllib.request.Request(token_url)
+                with urllib.request.urlopen(req, timeout=timeout) as resp:
+                    token_data = json.loads(resp.read().decode("utf-8"))
+                token = token_data.get("token", "")
+                if token:
+                    dl_url = f"{config_url.rsplit('/download/', 1)[0]}/download.php?token={token}"
+                    if attempt == 0:
+                        print(f"[config] 下载配置: {dl_url}", flush=True)
+                    req = urllib.request.Request(dl_url)
+                    with urllib.request.urlopen(req, timeout=timeout) as resp:
+                        config_text = resp.read().decode("utf-8", errors="replace")
+                    if config_text and config_text.strip():
+                        return _clean(config_text)
+                    last_err = "token API 返回空配置"
+                else:
+                    last_err = "token 为空"
+            else:
+                if attempt == 0:
+                    print(f"[config] 直接下载: {config_url}", flush=True)
+                req = urllib.request.Request(config_url, headers={"User-Agent": "aimilivpn/1.0"})
+                with urllib.request.urlopen(req, timeout=timeout) as resp:
+                    body = resp.read()
+                try:
+                    config_text = body.decode("utf-8")
+                except UnicodeDecodeError:
+                    import base64
+                    config_text = base64.b64decode(body).decode("utf-8")
+                if config_text and config_text.strip():
+                    if config_text.strip().startswith("<") and "</" in config_text:
+                        m = re.search(r"<(?:code|pre)[^>]*>(.*?)</(?:code|pre)>", config_text, re.DOTALL)
+                        if m:
+                            from html import unescape as _unescape
+                            return _clean(_unescape(m.group(1).strip()))
+                        last_err = "HTML 页面无配置内容"
+                    else:
+                        return _clean(config_text)
+                last_err = "直接下载返回空配置"
+        except Exception as exc:
+            last_err = str(exc)
+            if attempt > 0:
+                time.sleep(1 * (2 ** (attempt - 1)))
+
+    print(f"[config] 下载失败 ({retry}次重试): {last_err}", flush=True)
+    return ""
 
 
 def openvpn_command(config_file: str, route_nopull: bool, dev: str = "tun0") -> list[str]:
@@ -1425,52 +1469,21 @@ def test_node_by_id(node_id: str) -> dict[str, Any]:
         config_text = node.get("config_text") or ""
         config_url = str(node.get("config_url", "")).strip()
         if (not config_text or not config_text.strip()) and config_url:
-            try:
-                sid_match = re.search(r"/download/(\d+)/?", config_url)
-                if sid_match:
-                    sid = sid_match.group(1)
-                    print(f"[config] 获取令牌: server_id={sid}", flush=True)
-                    token_url = f"{config_url.rsplit('/download/', 1)[0]}/get_token.php?id={sid}"
-                    req = urllib.request.Request(token_url)
-                    with urllib.request.urlopen(req, timeout=10) as resp:
-                        token_data = json.loads(resp.read().decode("utf-8"))
-                    token = token_data.get("token", "")
-                    if token:
-                        dl_url = f"{config_url.rsplit('/download/', 1)[0]}/download.php?token={token}"
-                        print(f"[config] 下载配置: {dl_url}", flush=True)
-                        req = urllib.request.Request(dl_url)
-                        with urllib.request.urlopen(req, timeout=10) as resp:
-                            config_text = resp.read().decode("utf-8", errors="replace")
-                else:
-                    print(f"[config] 下载节点配置: {config_url}", flush=True)
-                    req = urllib.request.Request(config_url)
-                    with urllib.request.urlopen(req, timeout=10) as resp:
-                        raw = resp.read()
-                        try:
-                            config_text = raw.decode("utf-8")
-                        except UnicodeDecodeError:
-                            import base64
-                            config_text = base64.b64decode(raw).decode("utf-8")
-                if config_text and config_text.strip():
-                    config_text = re.sub(r'(?m)^(dev|persist-tun)\s+.*\n?', '', config_text)
-                    config_text = re.sub(r'(?m)^proto\s+tcp\s*$', 'proto tcp-client', config_text)
-                    if not re.search(r'(?m)^(client|tls-client)\s', config_text):
-                        config_text = 'tls-client\n' + config_text
-                    with lock:
-                        nodes = read_nodes()
-                        for n in nodes:
-                            if n.get("id") == node_id:
-                                n["config_text"] = config_text
-                                conf_path = CONFIG_DIR / f"{node_id}.ovpn"
-                                try:
-                                    conf_path.parent.mkdir(exist_ok=True, parents=True)
-                                    conf_path.write_text(config_text, encoding="utf-8")
-                                except Exception:
-                                    pass
-                                n["config_file"] = str(conf_path)
-                        write_json(NODES_FILE, nodes)
-            except Exception as exc:
-                print(f"[config] 下载失败: {exc}", flush=True)
+            config_text = _download_node_config(config_url)
+            if config_text and config_text.strip():
+                with lock:
+                    nodes = read_nodes()
+                    for n in nodes:
+                        if n.get("id") == node_id:
+                            n["config_text"] = config_text
+                            conf_path = CONFIG_DIR / f"{node_id}.ovpn"
+                            try:
+                                conf_path.parent.mkdir(exist_ok=True, parents=True)
+                                conf_path.write_text(config_text, encoding="utf-8")
+                            except Exception:
+                                pass
+                            n["config_file"] = str(conf_path)
+                    write_json(NODES_FILE, nodes)
         if not config_text or not config_text.strip():
             raise RuntimeError(f"节点配置无效或下载失败: {config_url}")
         h = str(node.get("remote_host") or node.get("ip"))
@@ -1558,48 +1571,15 @@ def test_multiple_nodes(node_ids: list[str]) -> list[dict[str, Any]]:
         if not config_text or not config_text.strip():
             config_url = str(n_info.get("config_url", "")).strip()
             if config_url:
-                try:
-                    sid_match = re.search(r"/download/(\d+)/?", config_url)
-                    if sid_match:
-                        sid = sid_match.group(1)
-                        token_url = f"{config_url.rsplit('/download/', 1)[0]}/get_token.php?id={sid}"
-                        req = urllib.request.Request(token_url)
-                        with urllib.request.urlopen(req, timeout=10) as resp:
-                            token_data = json.loads(resp.read().decode("utf-8"))
-                        token = token_data.get("token", "")
-                        if token:
-                            dl_url = f"{config_url.rsplit('/download/', 1)[0]}/download.php?token={token}"
-                            req = urllib.request.Request(dl_url)
-                            with urllib.request.urlopen(req, timeout=10) as resp:
-                                config_text = resp.read().decode("utf-8", errors="replace")
-                    else:
-                        req = urllib.request.Request(config_url)
-                        with urllib.request.urlopen(req, timeout=10) as resp:
-                            raw = resp.read()
-                            try:
-                                config_text = raw.decode("utf-8")
-                            except UnicodeDecodeError:
-                                import base64
-                                config_text = base64.b64decode(raw).decode("utf-8")
-                    if config_text and config_text.strip():
-                        config_text = re.sub(r'(?m)^(dev|persist-tun)\s+.*\n?', '', config_text)
-                        config_text = re.sub(r'(?m)^proto\s+tcp\s*$', 'proto tcp-client', config_text)
-                        if not re.search(r'(?m)^(client|tls-client)\s', config_text):
-                            config_text = 'tls-client\n' + config_text
-                        conf_path = CONFIG_DIR / f"{node_id}.ovpn"
-                        try:
-                            conf_path.parent.mkdir(exist_ok=True, parents=True)
-                            conf_path.write_text(config_text, encoding="utf-8")
-                            config_file = str(conf_path)
-                        except Exception:
-                            pass
-                except Exception:
-                    pass
-        if config_text and config_text.strip():
-            config_text = re.sub(r'(?m)^(dev|persist-tun)\s+.*\n?', '', config_text)
-            config_text = re.sub(r'(?m)^proto\s+tcp\s*$', 'proto tcp-client', config_text)
-            if not re.search(r'(?m)^(client|tls-client)\s', config_text):
-                config_text = 'tls-client\n' + config_text
+                config_text = _download_node_config(config_url)
+                if config_text and config_text.strip():
+                    conf_path = CONFIG_DIR / f"{node_id}.ovpn"
+                    try:
+                        conf_path.parent.mkdir(exist_ok=True, parents=True)
+                        conf_path.write_text(config_text, encoding="utf-8")
+                        config_file = str(conf_path)
+                    except Exception:
+                        pass
         if not config_text or not config_text.strip():
             return {
                 "id": node_id,
