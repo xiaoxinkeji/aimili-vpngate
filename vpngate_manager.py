@@ -771,9 +771,6 @@ def row_to_node(row: dict[str, str], config_text: str) -> dict[str, Any]:
     }
 
 def fetch_candidates() -> list[dict[str, Any]]:
-    if not TUN_AVAILABLE:
-        print("[fetch_candidates] TUN 不可用，跳过 vpngate.net API 拉取，使用 publicvpnlist 节点", flush=True)
-        return []
     blacklist = load_blacklist()
     candidates: list[dict[str, Any]] = []
     seen_ips = set()
@@ -900,8 +897,39 @@ def get_openvpn_version() -> float:
     _openvpn_version = 2.4
     return _openvpn_version
 
-def _download_node_config(config_url: str, retry: int = 3, timeout: int = 10) -> str:
-    """下载 OpenVPN 配置文件，支持 PVL token API 和直接 URL 两种方式，返回清洗后的配置文本或空字符串"""
+_PVL_TEMPLATE_CACHE: str | None = None
+
+
+def _load_pvl_template() -> str:
+    global _PVL_TEMPLATE_CACHE
+    if _PVL_TEMPLATE_CACHE is not None:
+        return _PVL_TEMPLATE_CACHE
+    tpl_path = ROOT_DIR / "pvl_ovpn_template.conf"
+    if tpl_path.exists():
+        _PVL_TEMPLATE_CACHE = tpl_path.read_text(encoding="utf-8").strip()
+    return _PVL_TEMPLATE_CACHE or ""
+
+
+def _generate_pvl_config(remote_host: str, remote_port: int, proto: str = "tcp") -> str:
+    template = _load_pvl_template()
+    if not template:
+        return ""
+    cfg = template + "\n"
+    if proto.lower() == "tcp":
+        cfg += "proto tcp-client\n"
+    else:
+        cfg += f"proto {proto}\n"
+    cfg += f"remote {remote_host} {remote_port}\n"
+    cfg = re.sub(r'(?m)^(dev|persist-tun)\s+.*\n?', '', cfg)
+    if not re.search(r'(?m)^(client|tls-client)\s', cfg):
+        cfg = 'tls-client\n' + cfg
+    return cfg
+
+
+def _download_node_config(config_url: str, retry: int = 3, timeout: int = 10,
+                           remote_host: str = "", remote_port: int = 0,
+                           proto: str = "tcp") -> str:
+    """下载或生成 OpenVPN 配置文件。优先通过 API 下载，失败时对 PVL 节点使用模板生成。"""
 
     def _clean(text: str) -> str:
         text = re.sub(r'(?m)^(dev|persist-tun)\s+.*\n?', '', text)
@@ -963,6 +991,12 @@ def _download_node_config(config_url: str, retry: int = 3, timeout: int = 10) ->
             last_err = str(exc)
             if attempt > 0:
                 time.sleep(1 * (2 ** (attempt - 1)))
+
+    if remote_host and remote_port:
+        fallback = _generate_pvl_config(remote_host, remote_port, proto)
+        if fallback:
+            print(f"[config] API 下载失败，使用模板生成配置: {remote_host}:{remote_port}/{proto}", flush=True)
+            return fallback
 
     print(f"[config] 下载失败 ({retry}次重试): {last_err}", flush=True)
     return ""
@@ -1469,7 +1503,10 @@ def test_node_by_id(node_id: str) -> dict[str, Any]:
         config_text = node.get("config_text") or ""
         config_url = str(node.get("config_url", "")).strip()
         if (not config_text or not config_text.strip()) and config_url:
-            config_text = _download_node_config(config_url)
+            config_text = _download_node_config(config_url,
+                remote_host=str(node.get("remote_host") or ""),
+                remote_port=parse_int(node.get("remote_port")),
+                proto=str(node.get("proto") or "tcp"))
             if config_text and config_text.strip():
                 with lock:
                     nodes = read_nodes()
@@ -1571,7 +1608,10 @@ def test_multiple_nodes(node_ids: list[str]) -> list[dict[str, Any]]:
         if not config_text or not config_text.strip():
             config_url = str(n_info.get("config_url", "")).strip()
             if config_url:
-                config_text = _download_node_config(config_url)
+                config_text = _download_node_config(config_url,
+                    remote_host=str(n_info.get("remote_host") or ""),
+                    remote_port=parse_int(n_info.get("remote_port")),
+                    proto=str(n_info.get("proto") or "tcp"))
                 if config_text and config_text.strip():
                     conf_path = CONFIG_DIR / f"{node_id}.ovpn"
                     try:
