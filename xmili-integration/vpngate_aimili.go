@@ -117,11 +117,3 @@ func fetchAimiliNodes(apiURL string) ([]VPNGateServer, error) {
 	logger.Infof("[AimiliVPN] Fetched %d nodes from aimili-vpngate API", len(servers))
 	return servers, nil
 }
-
-func loadAimiliVPNServers() ([]VPNGateServer, error) {
-	apiURL := getAimiliAPIURL()
-	if apiURL == "" {
-		return nil, fmt.Errorf("AIMILI_NODE_API is not configured")
-	}
-	return fetchAimiliNodes(apiURL)
-}

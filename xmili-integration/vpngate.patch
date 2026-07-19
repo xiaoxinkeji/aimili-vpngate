@@ -1,22 +1,33 @@
 diff --git a/web/service/vpngate.go b/web/service/vpngate.go
-index d880dff..dec4198 100644
+index d880dff..6249cb6 100644
 --- a/web/service/vpngate.go
 +++ b/web/service/vpngate.go
-@@ -73,11 +73,36 @@ func (s *VPNGateService) ListServersWithUnavailable(refresh bool, includeUnavail
+@@ -1,6 +1,7 @@
+ package service
+ 
+ import (
++	"fmt"
+ 	"sort"
+ 	"sync"
+ 	"time"
+@@ -73,11 +74,44 @@ func (s *VPNGateService) ListServersWithUnavailable(refresh bool, includeUnavail
  func loadVPNGateServers() ([]VPNGateServer, error) {
  	servers, err := (VPNGateFetcher{}).Fetch()
  	if err != nil {
+-		return nil, err
 +		logger.Warning("VPNGate fetch failed:", err)
 +		servers = nil
 +	} else {
 +		servers = (VPNGateValidator{}).Validate(servers)
 +	}
 +
++	var aimiliErr error
 +	aimiliURL := getAimiliAPIURL()
 +	if aimiliURL != "" {
-+		aimiliServers, aimiliErr := fetchAimiliNodes(aimiliURL)
-+		if aimiliErr != nil {
-+			logger.Warning("aimili-vpngate fetch failed:", aimiliErr)
++		aimiliServers, err2 := fetchAimiliNodes(aimiliURL)
++		if err2 != nil {
++			logger.Warning("aimili-vpngate fetch failed:", err2)
++			aimiliErr = err2
 +		} else {
 +			seen := make(map[string]bool)
 +			for _, s := range servers {
@@ -32,7 +43,13 @@ index d880dff..dec4198 100644
 +	}
 +
 +	if len(servers) == 0 {
- 		return nil, err
++		if err != nil && aimiliErr != nil {
++			return nil, fmt.Errorf("VPNGate and aimili both failed | VPNGate: %w | aimili: %v", err, aimiliErr)
++		}
++		if err != nil {
++			return nil, err
++		}
++		return nil, aimiliErr
  	}
 -	servers = (VPNGateValidator{}).Validate(servers)
 -	sortVPNGateServers(servers)
