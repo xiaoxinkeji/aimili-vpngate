@@ -117,6 +117,7 @@ CHECK_INTERVAL_SECONDS = env_int("CHECK_INTERVAL_SECONDS", 1260, 1)
 TARGET_VALID_NODES = env_int("TARGET_VALID_NODES", 3, 1)
 MAX_SCAN_ROWS = env_int("MAX_SCAN_ROWS", 300, 1)
 OPENVPN_TEST_TIMEOUT_SECONDS = env_int("OPENVPN_TEST_TIMEOUT_SECONDS", 35, 1)
+RETEST_COOLDOWN_SECONDS = env_int("RETEST_COOLDOWN_SECONDS", 900, 0)
 MANUAL_TEST_NODE_LIMIT = env_int("MANUAL_TEST_NODE_LIMIT", 5, 1, 20)
 INITIAL_CONNECT_TEST_LIMIT = env_int("INITIAL_CONNECT_TEST_LIMIT", 10, 1, 50)
 OPENVPN_CMD = os.environ.get("OPENVPN_CMD", "openvpn")
@@ -2149,16 +2150,26 @@ def maintain_valid_nodes(force: bool = False) -> str:
                     with lock:
                         is_connecting = True
 
-        # Test remaining non-active nodes from the list
+        # Test remaining non-active nodes from the list (skip recently-tested unavailable)
         with lock:
             current_nodes = read_nodes()
-            to_test = [
-                n for n in current_nodes
-                if not n.get("active") and n.get("id") not in initial_tested_ids and (n.get("config_text") or n.get("config_url"))
-            ]
+            now = time.time()
+            skipped_recent = 0
+            to_test = []
+            for n in current_nodes:
+                if n.get("active") or n.get("id") in initial_tested_ids:
+                    continue
+                if not (n.get("config_text") or n.get("config_url")):
+                    continue
+                if (RETEST_COOLDOWN_SECONDS > 0
+                        and n.get("probe_status") == "unavailable"
+                        and n.get("probed_at", 0) > now - RETEST_COOLDOWN_SECONDS):
+                    skipped_recent += 1
+                    continue
+                to_test.append(n)
             to_test_ids = [n["id"] for n in to_test]
             
-        msg = f"开始对列表中所有候选节点进行周期连通性与延迟测试，待检测节点共 {len(to_test_ids)} 个"
+        msg = f"开始周期连通性与延迟测试，共 {len(to_test_ids)} 个节点 (跳过 {skipped_recent} 个冷却期内的不可用节点)"
         print(f"[周期检测] {msg}", flush=True)
         log_to_json("INFO", "Main", msg)
         
@@ -6085,6 +6096,7 @@ def main() -> None:
             "target_valid_nodes": TARGET_VALID_NODES,
             "fetch_interval_seconds": FETCH_INTERVAL_SECONDS,
             "check_interval_seconds": CHECK_INTERVAL_SECONDS,
+            "retest_cooldown_seconds": RETEST_COOLDOWN_SECONDS,
             "local_proxy": f"http://{'[' + LOCAL_PROXY_HOST + ']' if ':' in LOCAL_PROXY_HOST else LOCAL_PROXY_HOST}:{LOCAL_PROXY_PORT}",
             "active_openvpn_node_id": "",
             "last_fetch_status": "starting",
