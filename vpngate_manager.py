@@ -120,6 +120,8 @@ OPENVPN_TEST_TIMEOUT_SECONDS = env_int("OPENVPN_TEST_TIMEOUT_SECONDS", 35, 1)
 RETEST_COOLDOWN_SECONDS = env_int("RETEST_COOLDOWN_SECONDS", 900, 0)
 API_CIRCUIT_BREAKER_SECONDS = env_int("API_CIRCUIT_BREAKER_SECONDS", 600, 0)
 WARMUP_CHECK_INTERVAL_SECONDS = env_int("WARMUP_CHECK_INTERVAL_SECONDS", 60, 15, 300)
+PROGRESSIVE_ABORT_THRESHOLD = env_int("PROGRESSIVE_ABORT_THRESHOLD", 50, 5, 500)
+SATURATION_MULTIPLIER = env_int("SATURATION_MULTIPLIER", 2, 1, 10)
 
 _api_circuit_open_until = 0.0
 MANUAL_TEST_NODE_LIMIT = env_int("MANUAL_TEST_NODE_LIMIT", 5, 1, 20)
@@ -1848,6 +1850,9 @@ def test_multiple_nodes(node_ids: list[str]) -> list[dict[str, Any]]:
 
     updated_nodes_map = {}
     max_workers = min(5, max(1, len(to_test)))
+    abort_threshold = min(PROGRESSIVE_ABORT_THRESHOLD, len(to_test) - 1)
+    completed_count = 0
+    unavailable_count = 0
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {executor.submit(test_worker, (idx, n)): n["id"] for idx, n in enumerate(to_test)}
         for future in concurrent.futures.as_completed(futures):
@@ -1856,12 +1861,17 @@ def test_multiple_nodes(node_ids: list[str]) -> list[dict[str, Any]]:
                 res = future.result()
                 updated_nodes_map[nid] = res
             except Exception as e:
-                updated_nodes_map[nid] = {
+                res = {
                     "id": nid,
                     "probe_status": "unavailable",
                     "probe_message": f"Test exception: {e}",
                     "latency_ms": 0
                 }
+                updated_nodes_map[nid] = res
+            completed_count += 1
+            if res.get("probe_status") != "available":
+                unavailable_count += 1
+                
             with lock:
                 current_nodes = read_nodes()
                 for n in current_nodes:
@@ -1869,6 +1879,15 @@ def test_multiple_nodes(node_ids: list[str]) -> list[dict[str, Any]]:
                         n.update(updated_nodes_map[nid])
                         break
                 write_json(NODES_FILE, sort_all_nodes(current_nodes))
+            
+            # Progressive abort: if first N nodes are ALL unavailable, skip remaining
+            if completed_count >= abort_threshold and unavailable_count == completed_count:
+                remaining = len(futures) - completed_count
+                print(f"[渐进终止] 前 {completed_count} 个节点全部不可用，跳过剩余 {remaining} 个节点", flush=True)
+                log_to_json("WARNING", "Main", f"渐进终止: 前 {completed_count} 个节点全部不可用，跳过 {remaining} 个")
+                for f in futures:
+                    f.cancel()
+                break
                 
     # 批量查询并丰富可用节点的地理及 ISP 信息，防止并发时被定位 API 接口限流
     successful_nodes = [res for res in updated_nodes_map.values() if res.get("probe_status") == "available"]
@@ -2323,6 +2342,16 @@ def maintain_valid_nodes(force: bool = False) -> str:
             # Sort by latency ascending (nodes without latency data go last)
             to_test.sort(key=lambda n: n.get("latency_ms") if n.get("latency_ms") is not None and n.get("latency_ms") > 0 else 999999)
             to_test_ids = [n["id"] for n in to_test]
+            
+        # Saturation check: skip bulk test if we already have plenty of available nodes
+        with lock:
+            saturation_target = TARGET_VALID_NODES * SATURATION_MULTIPLIER
+            available_now = sum(1 for n in read_nodes() if n.get("probe_status") == "available")
+        if available_now >= saturation_target and not initial_tested_ids:
+            skipped_msg = f"饱和跳过: 已有 {available_now} 个可用节点 (目标 {saturation_target})，跳过本轮 {len(to_test_ids)} 个待测节点"
+            print(f"[周期检测] {skipped_msg}", flush=True)
+            log_to_json("INFO", "Main", skipped_msg)
+            to_test_ids = []
             
         msg = f"开始周期连通性与延迟测试，共 {len(to_test_ids)} 个节点 (跳过 {skipped_recent} 个冷却期内的不可用节点)"
         print(f"[周期检测] {msg}", flush=True)
@@ -6260,6 +6289,8 @@ def main() -> None:
             "retest_cooldown_seconds": RETEST_COOLDOWN_SECONDS,
             "api_circuit_breaker_seconds": API_CIRCUIT_BREAKER_SECONDS,
             "warmup_check_interval_seconds": WARMUP_CHECK_INTERVAL_SECONDS,
+            "progressive_abort_threshold": PROGRESSIVE_ABORT_THRESHOLD,
+            "saturation_multiplier": SATURATION_MULTIPLIER,
             "cert_templates_count": len(_discover_cert_templates()),
             "local_proxy": f"http://{'[' + LOCAL_PROXY_HOST + ']' if ':' in LOCAL_PROXY_HOST else LOCAL_PROXY_HOST}:{LOCAL_PROXY_PORT}",
             "active_openvpn_node_id": "",
