@@ -44,6 +44,8 @@
   - 该 API 直接在响应中提供 Base64 编码的 OpenVPN 配置，无需额外下载步骤
   - `fetch_candidates()` 已移除 TUN_AVAILABLE 门控，所有环境下均尝试拉取
   - API 不可达时自动回退到 PVL 源 + 模板生成
+  - API 断路器 `API_CIRCUIT_BREAKER_SECONDS` (默认 600s): 连续失败后自动跳过拉取，避免无效请求
+  - 指数退避重试: 1s/3s/7s/15s (上限 30s)，无缓存时 3 次重试
 
 ### OpenVPN 2.6.x TUN 驱动硬性依赖
 - Date: 2026-07-19
@@ -88,3 +90,27 @@
   - 主项目需更新 submodule 引用 commit 并单独提交
   - 分支命名格式: `YYMMDD-(feat|fix|chore|refactor)-简短描述`
   - 推送时使用 MR 自动创建参数: `-o merge_request.create`
+
+### 智能检测周期优化 (v1.4.0-v1.5.1)
+- Date: 2026-07-20
+- Context: Agent 在执行周期检测性能优化时实现
+- Category: 排错调试
+- Instructions:
+  - `RETEST_COOLDOWN_SECONDS` (默认 900s): 冷却期内 `unavailable` 节点跳过重测，not_checked/testing 始终参与
+  - `WARMUP_CHECK_INTERVAL_SECONDS` (默认 60s): 可用节点不足 `TARGET_VALID_NODES` 时加速检测
+  - `PROGRESSIVE_ABORT_THRESHOLD` (默认 50): 首批 N 个节点全部不可用时跳过剩余测试
+  - `SATURATION_MULTIPLIER` (默认 2): 可用节点数达到目标 N 倍时跳过本轮检测
+  - 待测节点按 `latency_ms` 升序排列，无延迟数据的排最后
+  - 预热日志: `[预热模式] 可用节点不足 (X/Y)，快速周期 Ns`
+  - 渐进终止日志: `[渐进终止] 前 N 个节点全部不可用，跳过剩余 M 个节点`
+  - 所有配置项通过 State API (`/api/nodes`) 的 `state` 字段对外暴露
+
+### 多模板证书发现 (v1.5.0)
+- Date: 2026-07-20
+- Context: Agent 在解决 PVL 节点 AUTH_FAILED 问题时实现
+- Category: 排错调试
+- Instructions:
+  - `_discover_cert_templates()`: 扫描所有节点 config_text，从 <ca>/<cert>/<key> 块提取独立证书组合，SHA256 去重
+  - 模板持久化到 `cert_templates.json`，状态 API 暴露 `cert_templates_count`
+  - AUTH_FAILED 节点自动尝试替代模板重测，最多扫描所有模板
+  - 适用于 vpngate API 恢复后可发现多套证书组合
