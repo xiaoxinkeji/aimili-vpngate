@@ -119,6 +119,7 @@ MAX_SCAN_ROWS = env_int("MAX_SCAN_ROWS", 300, 1)
 OPENVPN_TEST_TIMEOUT_SECONDS = env_int("OPENVPN_TEST_TIMEOUT_SECONDS", 35, 1)
 RETEST_COOLDOWN_SECONDS = env_int("RETEST_COOLDOWN_SECONDS", 900, 0)
 API_CIRCUIT_BREAKER_SECONDS = env_int("API_CIRCUIT_BREAKER_SECONDS", 600, 0)
+WARMUP_CHECK_INTERVAL_SECONDS = env_int("WARMUP_CHECK_INTERVAL_SECONDS", 60, 15, 300)
 
 _api_circuit_open_until = 0.0
 MANUAL_TEST_NODE_LIMIT = env_int("MANUAL_TEST_NODE_LIMIT", 5, 1, 20)
@@ -921,6 +922,70 @@ def get_openvpn_version() -> float:
     return _openvpn_version
 
 _PVL_TEMPLATE_CACHE: str | None = None
+_CERT_TEMPLATES_CACHE: list[str] | None = None
+_CERT_TEMPLATES_FILE = "cert_templates.json"
+
+_CERT_BLOCK_PATTERN = re.compile(
+    r'<ca>(.*?)</ca>.*?'
+    r'<cert>(.*?)</cert>.*?'
+    r'<key>(.*?)</key>',
+    re.DOTALL
+)
+
+
+def _discover_cert_templates() -> list[str]:
+    """扫描所有节点的 config_text，提取未加密的证书密钥组合，去重后存储。"""
+    global _CERT_TEMPLATES_CACHE
+    if _CERT_TEMPLATES_CACHE is not None:
+        return _CERT_TEMPLATES_CACHE
+    
+    templates: list[tuple[str, str, str]] = []
+    seen_hashes: set[str] = set()
+    
+    # Always include the hardcoded PVL template
+    pvl = _load_pvl_template()
+    if pvl:
+        m = _CERT_BLOCK_PATTERN.search(pvl)
+        if m:
+            key_hash = hashlib.sha256(m.group(0).encode()).hexdigest()
+            if key_hash not in seen_hashes:
+                seen_hashes.add(key_hash)
+                templates.append((m.group(1), m.group(2), m.group(3)))
+    
+    # Scan all nodes
+    for node in cached_nodes():
+        config_text = node.get("config_text", "")
+        if not config_text:
+            continue
+        for m in _CERT_BLOCK_PATTERN.finditer(config_text):
+            ca, cert, key = m.group(1), m.group(2), m.group(3)
+            if not ca or not cert or not key:
+                continue
+            if "ENCRYPTED" in key or "ENCRYPTED" in ca or "ENCRYPTED" in cert:
+                continue
+            key_hash = hashlib.sha256(m.group(0).encode()).hexdigest()
+            if key_hash not in seen_hashes:
+                seen_hashes.add(key_hash)
+                templates.append((ca, cert, key))
+    
+    # Build full template strings using original matched blocks
+    result: list[str] = []
+    for ca, cert, key in templates:
+        tpl = f"<ca>\n{ca}\n</ca>\n<cert>\n{cert}\n</cert>\n<key>\n{key}\n</key>"
+        result.append(tpl)
+    
+    _CERT_TEMPLATES_CACHE = result
+    # Persist to disk
+    try:
+        tpl_path = NODES_DIR / _CERT_TEMPLATES_FILE
+        write_json(str(tpl_path), {"count": len(result), "updated_at": time.time()})
+    except Exception:
+        pass
+    
+    if len(result) > 1:
+        print(f"[证书模板] 发现 {len(result)} 套独立证书密钥组合", flush=True)
+        log_to_json("INFO", "Main", f"发现 {len(result)} 套独立证书密钥组合")
+    return result
 
 
 def _load_pvl_template() -> str:
@@ -1560,18 +1625,50 @@ def test_node_by_id(node_id: str) -> dict[str, Any]:
     latency = vpn_utils.ping_latency_ms(h, p, fallback_ping)
     
     idx = None
-    try:
-        idx = get_free_test_index()
-        use_dev = "null" if not TUN_AVAILABLE else f"tun{idx}"
-        ok, message, _ = run_openvpn_until_ready(str(temp_path), keep_alive=False, route_nopull=True, timeout=12, dev=use_dev)
-    finally:
-        if idx is not None:
-            release_test_index(idx)
+    
+    def _single_test(config: str) -> tuple[bool, str]:
+        nonlocal idx
         try:
-            if temp_path.exists():
-                temp_path.unlink()
-        except Exception:
-            pass
+            idx = get_free_test_index()
+            use_dev = "null" if not TUN_AVAILABLE else f"tun{idx}"
+            ok, message, _ = run_openvpn_until_ready(str(temp_path), keep_alive=False, route_nopull=True, timeout=12, dev=use_dev)
+            return ok, message
+        finally:
+            if idx is not None:
+                release_test_index(idx)
+                idx = None
+            try:
+                if temp_path.exists():
+                    temp_path.unlink()
+            except Exception:
+                pass
+    
+    ok, message = _single_test(config_text)
+    
+    # AUTH retry: try alternative cert templates
+    if not ok and "AUTH_FAILED" in message.upper():
+        templates = _discover_cert_templates()
+        if len(templates) > 1:
+            current_hash = ""
+            m = _CERT_BLOCK_PATTERN.search(config_text)
+            if m:
+                current_hash = hashlib.sha256(m.group(0).encode()).hexdigest()
+            for alt_tpl in templates:
+                alt_hash = hashlib.sha256(alt_tpl.encode()).hexdigest()
+                if alt_hash == current_hash:
+                    continue
+                alt_config = _CERT_BLOCK_PATTERN.sub(alt_tpl + "\n", config_text)
+                CONFIG_DIR.mkdir(exist_ok=True, parents=True)
+                try:
+                    temp_path.write_text(alt_config, encoding="utf-8")
+                except Exception:
+                    continue
+                alt_ok, alt_message = _single_test(alt_config)
+                if alt_ok:
+                    ok, message = alt_ok, f"[cert-tpl-ok] {alt_message}"
+                    config_text = alt_config
+                    break
+                message = f"[cert-tpl-retry] {alt_message}"
 
     temp_node = {
         "id": node_id,
@@ -1662,13 +1759,35 @@ def test_multiple_nodes(node_ids: list[str]) -> list[dict[str, Any]]:
         fallback_ping = parse_int(n_info.get("ping"))
         
         temp_path = test_config_path(node_id)
+        
+        latency = vpn_utils.ping_latency_ms(h, p, fallback_ping)
+        tun_idx = None
+        
+        def _try_test(config: str) -> tuple[bool, str]:
+            nonlocal tun_idx, latency
+            try:
+                tun_idx = get_free_test_index()
+                dev_name = "null" if not TUN_AVAILABLE else f"tun{tun_idx}"
+                ok, message, _ = run_openvpn_until_ready(str(temp_path), keep_alive=False, route_nopull=True, timeout=12, dev=dev_name)
+                return ok, message
+            finally:
+                if tun_idx is not None:
+                    release_test_index(tun_idx)
+                    tun_idx = None
+                try:
+                    if temp_path.exists():
+                        temp_path.unlink()
+                except Exception:
+                    pass
+        
+        # Write initial config
         try:
             CONFIG_DIR.mkdir(exist_ok=True, parents=True)
             temp_path.write_text(config_text, encoding="utf-8")
         except Exception as e:
             return {
                 "id": node_id,
-                "latency_ms": 0,
+                "latency_ms": latency,
                 "probe_status": "unavailable",
                 "probe_message": f"Failed to write configuration: {e}",
                 "probed_at": time.time(),
@@ -1679,21 +1798,33 @@ def test_multiple_nodes(node_ids: list[str]) -> list[dict[str, Any]]:
                 "ip_type": "",
                 "quality": "",
             }
-            
-        latency = vpn_utils.ping_latency_ms(h, p, fallback_ping)
-        tun_idx = None
-        try:
-            tun_idx = get_free_test_index()
-            dev_name = "null" if not TUN_AVAILABLE else f"tun{tun_idx}"
-            ok, message, _ = run_openvpn_until_ready(str(temp_path), keep_alive=False, route_nopull=True, timeout=12, dev=dev_name)
-        finally:
-            if tun_idx is not None:
-                release_test_index(tun_idx)
-            try:
-                if temp_path.exists():
-                    temp_path.unlink()
-            except Exception:
-                pass
+        ok, message = _try_test(config_text)
+        
+        # AUTH retry: try alternative cert templates
+        if not ok and "AUTH_FAILED" in message.upper():
+            templates = _discover_cert_templates()
+            if len(templates) > 1:
+                current_hash = ""
+                m = _CERT_BLOCK_PATTERN.search(config_text)
+                if m:
+                    current_hash = hashlib.sha256(m.group(0).encode()).hexdigest()
+                for alt_tpl in templates:
+                    alt_hash = hashlib.sha256(alt_tpl.encode()).hexdigest()
+                    if alt_hash == current_hash:
+                        continue
+                    alt_config = _CERT_BLOCK_PATTERN.sub(alt_tpl + "\n", config_text)
+                    CONFIG_DIR.mkdir(exist_ok=True, parents=True)
+                    try:
+                        temp_path.write_text(alt_config, encoding="utf-8")
+                    except Exception:
+                        continue
+                    alt_ok, alt_message = _try_test(alt_config)
+                    if alt_ok:
+                        ok, message = alt_ok, f"[cert-tpl-ok] {alt_message}"
+                        config_text = alt_config
+                        break
+                    # Even if still fails, use the latest diagnostic message
+                    message = f"[cert-tpl-retry] {alt_message}"
             
         temp_node = {
             "id": node_id,
@@ -2189,6 +2320,8 @@ def maintain_valid_nodes(force: bool = False) -> str:
                     skipped_recent += 1
                     continue
                 to_test.append(n)
+            # Sort by latency ascending (nodes without latency data go last)
+            to_test.sort(key=lambda n: n.get("latency_ms") if n.get("latency_ms") is not None and n.get("latency_ms") > 0 else 999999)
             to_test_ids = [n["id"] for n in to_test]
             
         msg = f"开始周期连通性与延迟测试，共 {len(to_test_ids)} 个节点 (跳过 {skipped_recent} 个冷却期内的不可用节点)"
@@ -2272,7 +2405,13 @@ def collector_loop() -> None:
         if not active_openvpn_running() and not success:
             sleep_time = 30
         else:
-            sleep_time = CHECK_INTERVAL_SECONDS
+            with lock:
+                available_count = sum(1 for n in read_nodes() if n.get("probe_status") == "available")
+            if available_count < TARGET_VALID_NODES:
+                sleep_time = WARMUP_CHECK_INTERVAL_SECONDS
+                print(f"[预热模式] 可用节点不足 ({available_count}/{TARGET_VALID_NODES})，快速周期 {sleep_time}s", flush=True)
+            else:
+                sleep_time = CHECK_INTERVAL_SECONDS
             
         time.sleep(sleep_time)
 
@@ -6120,6 +6259,8 @@ def main() -> None:
             "check_interval_seconds": CHECK_INTERVAL_SECONDS,
             "retest_cooldown_seconds": RETEST_COOLDOWN_SECONDS,
             "api_circuit_breaker_seconds": API_CIRCUIT_BREAKER_SECONDS,
+            "warmup_check_interval_seconds": WARMUP_CHECK_INTERVAL_SECONDS,
+            "cert_templates_count": len(_discover_cert_templates()),
             "local_proxy": f"http://{'[' + LOCAL_PROXY_HOST + ']' if ':' in LOCAL_PROXY_HOST else LOCAL_PROXY_HOST}:{LOCAL_PROXY_PORT}",
             "active_openvpn_node_id": "",
             "last_fetch_status": "starting",
