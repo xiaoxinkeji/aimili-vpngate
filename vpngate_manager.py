@@ -118,6 +118,9 @@ TARGET_VALID_NODES = env_int("TARGET_VALID_NODES", 3, 1)
 MAX_SCAN_ROWS = env_int("MAX_SCAN_ROWS", 300, 1)
 OPENVPN_TEST_TIMEOUT_SECONDS = env_int("OPENVPN_TEST_TIMEOUT_SECONDS", 35, 1)
 RETEST_COOLDOWN_SECONDS = env_int("RETEST_COOLDOWN_SECONDS", 900, 0)
+API_CIRCUIT_BREAKER_SECONDS = env_int("API_CIRCUIT_BREAKER_SECONDS", 600, 0)
+
+_api_circuit_open_until = 0.0
 MANUAL_TEST_NODE_LIMIT = env_int("MANUAL_TEST_NODE_LIMIT", 5, 1, 20)
 INITIAL_CONNECT_TEST_LIMIT = env_int("INITIAL_CONNECT_TEST_LIMIT", 10, 1, 50)
 OPENVPN_CMD = os.environ.get("OPENVPN_CMD", "openvpn")
@@ -772,18 +775,27 @@ def row_to_node(row: dict[str, str], config_text: str) -> dict[str, Any]:
     }
 
 def fetch_candidates() -> list[dict[str, Any]]:
+    global _api_circuit_open_until
+    
     blacklist = load_blacklist()
     candidates: list[dict[str, Any]] = []
     seen_ips = set()
     
-    # 检查本地是否有节点缓存，以确定最大重试尝试次数
-    has_cache = len(cached_nodes()) > 0
-    max_attempts = 1 if has_cache else 2
+    # Circuit breaker: skip fetch if within cooldown period
+    if API_CIRCUIT_BREAKER_SECONDS > 0 and _api_circuit_open_until > time.time():
+        remaining = int(_api_circuit_open_until - time.time())
+        msg = f"断路器开启，跳过 vpngate API 拉取 (剩余 {remaining}s)"
+        print(f"[fetch_candidates] {msg}", flush=True)
+        log_to_json("INFO", "Main", msg)
+        set_state(last_fetch_status="circuit_open", last_fetch_message=msg)
+        return []
     
-    # 尝试 URLs 队列: 1. HTTPS(验证证书) 2. HTTPS(不验证证书) 3. HTTP
+    has_cache = len(cached_nodes()) > 0
+    max_attempts = 2 if has_cache else 3
+    
+    # URL fallback: HTTPS -> HTTP
     attempts_targets = [
         (API_URL, True),
-        (API_URL, False)
     ]
     if API_URL.startswith("https://"):
         attempts_targets.append((API_URL.replace("https://", "http://"), True))
@@ -791,10 +803,14 @@ def fetch_candidates() -> list[dict[str, Any]]:
     log_to_json("INFO", "Main", "开始拉取官方 API 节点列表...")
     
     last_err = None
+    total_attempts = 0
     for url, verify_ssl in attempts_targets:
         for i in range(max_attempts):
+            total_attempts += 1
             if i > 0:
-                time.sleep(1.5)
+                # Exponential backoff: 1s, 3s, 7s, 15s...
+                delay = min(2 ** i - 1, 30)
+                time.sleep(delay)
             try:
                 msg = f"尝试拉取 {url} (SSL验证: {verify_ssl}, 第 {i+1} 次尝试)..."
                 print(f"[fetch_candidates] {msg}", flush=True)
@@ -839,15 +855,21 @@ def fetch_candidates() -> list[dict[str, Any]]:
             last_fetch_error_code=err_code,
             last_fetch_message=diag_msg
         )
+        if API_CIRCUIT_BREAKER_SECONDS > 0:
+            _api_circuit_open_until = time.time() + API_CIRCUIT_BREAKER_SECONDS
+            print(f"[fetch_candidates] 断路器已开启，下次拉取将在 {API_CIRCUIT_BREAKER_SECONDS}s 后", flush=True)
         if last_err:
             raise RuntimeError(diag_msg) from last_err
         else:
             raise RuntimeError(diag_msg)
+    else:
+        # Reset circuit breaker on success
+        _api_circuit_open_until = 0.0
                 
     set_state(
         last_fetch_at=time.time(),
         last_fetch_status="ok",
-        last_fetch_message=f"Fetched {len(candidates)} unique candidates across multiple attempts.",
+        last_fetch_message=f"Fetched {len(candidates)} unique candidates across {total_attempts} attempts.",
         blacklisted_nodes=len(blacklist),
     )
     log_to_json("INFO", "Main", f"成功获取官方 API 节点，共 {len(candidates)} 个候选节点")
@@ -6097,6 +6119,7 @@ def main() -> None:
             "fetch_interval_seconds": FETCH_INTERVAL_SECONDS,
             "check_interval_seconds": CHECK_INTERVAL_SECONDS,
             "retest_cooldown_seconds": RETEST_COOLDOWN_SECONDS,
+            "api_circuit_breaker_seconds": API_CIRCUIT_BREAKER_SECONDS,
             "local_proxy": f"http://{'[' + LOCAL_PROXY_HOST + ']' if ':' in LOCAL_PROXY_HOST else LOCAL_PROXY_HOST}:{LOCAL_PROXY_PORT}",
             "active_openvpn_node_id": "",
             "last_fetch_status": "starting",
