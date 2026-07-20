@@ -299,6 +299,42 @@ def generate_metrics() -> str:
         lines.append(f"aimilivpn_process_virtual_memory_bytes {d.get('process_virtual_memory_bytes', 0)}")
         lines.append("")
 
+    # ── 周期检测指标 ──
+    lines.append("# HELP aimilivpn_cycle_duration_seconds Duration of the last test cycle")
+    lines.append("# TYPE aimilivpn_cycle_duration_seconds gauge")
+    lines.append(f"aimilivpn_cycle_duration_seconds {safe_float(state.get('last_cycle_duration_seconds'))}")
+    lines.append("")
+
+    lines.append("# HELP aimilivpn_cycle_tested_count Nodes tested in last cycle")
+    lines.append("# TYPE aimilivpn_cycle_tested_count gauge")
+    lines.append(f"aimilivpn_cycle_tested_count {safe_int(state.get('last_cycle_tested'))}")
+    lines.append("")
+
+    lines.append("# HELP aimilivpn_cycle_skipped_count Nodes skipped (cooldown) in last cycle")
+    lines.append("# TYPE aimilivpn_cycle_skipped_count gauge")
+    lines.append(f"aimilivpn_cycle_skipped_count {safe_int(state.get('last_cycle_skipped'))}")
+    lines.append("")
+
+    lines.append("# HELP aimilivpn_cycle_saturated Whether last cycle was saturated-skipped (1=yes)")
+    lines.append("# TYPE aimilivpn_cycle_saturated gauge")
+    lines.append(f"aimilivpn_cycle_saturated {safe_int(state.get('last_cycle_saturated'))}")
+    lines.append("")
+
+    lines.append("# HELP aimilivpn_api_fetch_total Total successful API fetches")
+    lines.append("# TYPE aimilivpn_api_fetch_total counter")
+    lines.append(f"aimilivpn_api_fetch_total {safe_int(state.get('api_fetch_total'))}")
+    lines.append("")
+
+    lines.append("# HELP aimilivpn_api_fetch_failure_total Total failed API fetches")
+    lines.append("# TYPE aimilivpn_api_fetch_failure_total counter")
+    lines.append(f"aimilivpn_api_fetch_failure_total {safe_int(state.get('api_fetch_failure_total'))}")
+    lines.append("")
+
+    lines.append("# HELP aimilivpn_grace_nodes Nodes currently in grace period")
+    lines.append("# TYPE aimilivpn_grace_nodes gauge")
+    lines.append(f"aimilivpn_grace_nodes {safe_int(state.get('grace_nodes'))}")
+    lines.append("")
+
     # ── 运行时间 ──
     lines.append("# HELP aimilivpn_uptime_seconds Service uptime in seconds")
     lines.append("# TYPE aimilivpn_uptime_seconds gauge")

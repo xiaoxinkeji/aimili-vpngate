@@ -860,6 +860,9 @@ def fetch_candidates() -> list[dict[str, Any]]:
             last_fetch_error_code=err_code,
             last_fetch_message=diag_msg
         )
+        # Increment failure counter
+        _fail = parse_int(get_state().get("api_fetch_failure_total", 0)) + 1
+        set_state(api_fetch_failure_total=_fail)
         if API_CIRCUIT_BREAKER_SECONDS > 0:
             _api_circuit_open_until = time.time() + API_CIRCUIT_BREAKER_SECONDS
             print(f"[fetch_candidates] 断路器已开启，下次拉取将在 {API_CIRCUIT_BREAKER_SECONDS}s 后", flush=True)
@@ -870,6 +873,8 @@ def fetch_candidates() -> list[dict[str, Any]]:
     else:
         # Reset circuit breaker on success
         _api_circuit_open_until = 0.0
+        _total = parse_int(get_state().get("api_fetch_total", 0)) + 1
+        set_state(api_fetch_total=_total)
                 
     set_state(
         last_fetch_at=time.time(),
@@ -2392,10 +2397,25 @@ def maintain_valid_nodes(force: bool = False) -> str:
         print(f"[周期检测] {msg}", flush=True)
         log_to_json("INFO", "Main", msg)
         
+        _cycle_start = time.time()
         set_state(is_connecting=True, last_check_message="正在并发检测所有节点可用性...")
         test_multiple_nodes(to_test_ids)
+        _cycle_duration = time.time() - _cycle_start
+        actual_tested = min(len(to_test_ids), len(set(n["id"] for n in read_nodes() if n.get("probed_at", 0) >= _cycle_start)))
+        
         with lock:
             is_connecting = False
+            
+            # Update cycle metrics
+            merge_state = get_state()
+            _grace_now = sum(1 for n in read_nodes() if n.get("grace_cycles_remaining", 0) > 0)
+            set_state(
+                last_cycle_duration_seconds=round(_cycle_duration, 1),
+                last_cycle_tested=actual_tested,
+                last_cycle_skipped=skipped_recent,
+                last_cycle_saturated=0 if to_test_ids else 1,
+                grace_nodes=grace_now,
+            )
         
         with lock:
             merged = read_nodes()
