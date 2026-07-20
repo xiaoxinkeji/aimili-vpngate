@@ -122,6 +122,8 @@ API_CIRCUIT_BREAKER_SECONDS = env_int("API_CIRCUIT_BREAKER_SECONDS", 600, 0)
 WARMUP_CHECK_INTERVAL_SECONDS = env_int("WARMUP_CHECK_INTERVAL_SECONDS", 60, 15, 300)
 PROGRESSIVE_ABORT_THRESHOLD = env_int("PROGRESSIVE_ABORT_THRESHOLD", 50, 5, 500)
 SATURATION_MULTIPLIER = env_int("SATURATION_MULTIPLIER", 2, 1, 10)
+BATCH_FLUSH_SIZE = env_int("BATCH_FLUSH_SIZE", 10, 1, 100)
+GRACE_CYCLES = env_int("GRACE_CYCLES", 1, 0, 5)
 
 _api_circuit_open_until = 0.0
 MANUAL_TEST_NODE_LIMIT = env_int("MANUAL_TEST_NODE_LIMIT", 5, 1, 20)
@@ -1853,6 +1855,34 @@ def test_multiple_nodes(node_ids: list[str]) -> list[dict[str, Any]]:
     abort_threshold = min(PROGRESSIVE_ABORT_THRESHOLD, len(to_test) - 1)
     completed_count = 0
     unavailable_count = 0
+    def _flush_batch(buffer: dict[str, dict[str, Any]]) -> None:
+        if not buffer:
+            return
+        with lock:
+            current_nodes = read_nodes()
+            for n in current_nodes:
+                nid2 = n.get("id")
+                res = buffer.get(nid2)
+                if not res:
+                    continue
+                if GRACE_CYCLES > 0 and n.get("probe_status") == "available" \
+                        and res.get("probe_status") == "unavailable" \
+                        and res.get("latency_ms", 0) > 0:
+                    grace_remaining = int(n.get("grace_cycles_remaining", 0) or 0)
+                    if grace_remaining > 0:
+                        grace_remaining -= 1
+                    else:
+                        grace_remaining = GRACE_CYCLES
+                    n["grace_cycles_remaining"] = grace_remaining
+                    res["probe_status"] = "available"
+                    res["probe_message"] = f"[grace] {res.get('probe_message', '')}"
+                else:
+                    n.pop("grace_cycles_remaining", None)
+                n.update(res)
+            write_json(NODES_FILE, sort_all_nodes(current_nodes))
+    
+    batch_buffer: dict[str, dict[str, Any]] = {}
+    last_flush = time.time()
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {executor.submit(test_worker, (idx, n)): n["id"] for idx, n in enumerate(to_test)}
         for future in concurrent.futures.as_completed(futures):
@@ -1872,13 +1902,13 @@ def test_multiple_nodes(node_ids: list[str]) -> list[dict[str, Any]]:
             if res.get("probe_status") != "available":
                 unavailable_count += 1
                 
-            with lock:
-                current_nodes = read_nodes()
-                for n in current_nodes:
-                    if n.get("id") == nid:
-                        n.update(updated_nodes_map[nid])
-                        break
-                write_json(NODES_FILE, sort_all_nodes(current_nodes))
+            batch_buffer[nid] = res
+            
+            # Batch flush: write to disk every BATCH_FLUSH_SIZE results or 5 seconds
+            if len(batch_buffer) >= BATCH_FLUSH_SIZE or time.time() - last_flush >= 5:
+                _flush_batch(batch_buffer)
+                batch_buffer.clear()
+                last_flush = time.time()
             
             # Progressive abort: if first N nodes are ALL unavailable, skip remaining
             if completed_count >= abort_threshold and unavailable_count == completed_count:
@@ -1888,6 +1918,9 @@ def test_multiple_nodes(node_ids: list[str]) -> list[dict[str, Any]]:
                 for f in futures:
                     f.cancel()
                 break
+        
+        # Final flush: drain remaining buffer
+        _flush_batch(batch_buffer)
                 
     # 批量查询并丰富可用节点的地理及 ISP 信息，防止并发时被定位 API 接口限流
     successful_nodes = [res for res in updated_nodes_map.values() if res.get("probe_status") == "available"]
@@ -1896,15 +1929,17 @@ def test_multiple_nodes(node_ids: list[str]) -> list[dict[str, Any]]:
             vpn_utils.enrich_ip_info(successful_nodes)
         except Exception as ee:
             print(f"[test_multiple_nodes] 批量富化 IP 失败: {ee}", flush=True)
-
-    with lock:
-        current_nodes = read_nodes()
-        for n in current_nodes:
-            nid = n.get("id")
-            if nid in updated_nodes_map:
-                n.update(updated_nodes_map[nid])
-        sorted_nodes = sort_all_nodes(current_nodes)
-        write_json(NODES_FILE, sorted_nodes)
+        with lock:
+            current_nodes = read_nodes()
+            for n in current_nodes:
+                if n.get("probe_status") == "available":
+                    for sn in successful_nodes:
+                        if n.get("id") == sn.get("id"):
+                            for key in ("owner", "asn", "as_name", "location", "ip_type", "quality"):
+                                if sn.get(key):
+                                    n[key] = sn[key]
+                            break
+            write_json(NODES_FILE, sort_all_nodes(current_nodes))
         
     return list(updated_nodes_map.values())
 
@@ -6291,6 +6326,8 @@ def main() -> None:
             "warmup_check_interval_seconds": WARMUP_CHECK_INTERVAL_SECONDS,
             "progressive_abort_threshold": PROGRESSIVE_ABORT_THRESHOLD,
             "saturation_multiplier": SATURATION_MULTIPLIER,
+            "batch_flush_size": BATCH_FLUSH_SIZE,
+            "grace_cycles": GRACE_CYCLES,
             "cert_templates_count": len(_discover_cert_templates()),
             "local_proxy": f"http://{'[' + LOCAL_PROXY_HOST + ']' if ':' in LOCAL_PROXY_HOST else LOCAL_PROXY_HOST}:{LOCAL_PROXY_PORT}",
             "active_openvpn_node_id": "",
