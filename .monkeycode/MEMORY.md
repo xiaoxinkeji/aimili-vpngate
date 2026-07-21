@@ -114,3 +114,16 @@
   - 模板持久化到 `cert_templates.json`，状态 API 暴露 `cert_templates_count`
   - AUTH_FAILED 节点自动尝试替代模板重测，最多扫描所有模板
   - 适用于 vpngate API 恢复后可发现多套证书组合
+
+### Prometheus 可观测性增强 (v1.6.0-v1.6.1)
+- Date: 2026-07-20
+- Context: Agent 在执行生产级可观测性增强时实现
+- Category: 运维部署
+- Instructions:
+  - Prometheus `/metrics` 端点 (9798 端口) 新增 7 个指标: cycle_duration_seconds, cycle_tested/skipped/saturated, api_fetch_total, api_fetch_failure_total, grace_nodes
+  - 指标由 sidecar `metrics_exporter.py` 读取 `state.json` + `nodes.json` 生成
+  - `MAX_TEST_WORKERS` (默认 8): worker 数按节点池规模自适应 (每 50 节点 +1 worker)
+  - 内存压力保护: >500MB 限制 3 workers, >300MB 限制 5 workers
+  - `auto_switch_node` 指数退避: 2s/4s 间隔 (上限 30s)，替代立即重试
+  - 批量测试完成后输出状态分布摘要: `[批量测试] 完成 N 个节点: available=X, unavailable=Y`
+  - `/health` 端点返回 200 或 503 (基于 manager 进程存活)
