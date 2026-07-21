@@ -124,6 +124,7 @@ PROGRESSIVE_ABORT_THRESHOLD = env_int("PROGRESSIVE_ABORT_THRESHOLD", 50, 5, 500)
 SATURATION_MULTIPLIER = env_int("SATURATION_MULTIPLIER", 2, 1, 10)
 BATCH_FLUSH_SIZE = env_int("BATCH_FLUSH_SIZE", 10, 1, 100)
 GRACE_CYCLES = env_int("GRACE_CYCLES", 1, 0, 5)
+MAX_TEST_WORKERS = env_int("MAX_TEST_WORKERS", 8, 1, 20)
 
 _api_circuit_open_until = 0.0
 MANUAL_TEST_NODE_LIMIT = env_int("MANUAL_TEST_NODE_LIMIT", 5, 1, 20)
@@ -1856,7 +1857,17 @@ def test_multiple_nodes(node_ids: list[str]) -> list[dict[str, Any]]:
         return temp_node
 
     updated_nodes_map = {}
-    max_workers = min(5, max(1, len(to_test)))
+    max_workers = min(MAX_TEST_WORKERS, max(1, len(to_test) // 50 + 1))
+    # Scale down under memory pressure
+    try:
+        import resource
+        mem_mb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
+        if mem_mb > 500:
+            max_workers = min(max_workers, 3)
+        elif mem_mb > 300:
+            max_workers = min(max_workers, 5)
+    except Exception:
+        pass
     abort_threshold = min(PROGRESSIVE_ABORT_THRESHOLD, len(to_test) - 1)
     completed_count = 0
     unavailable_count = 0
@@ -1926,6 +1937,17 @@ def test_multiple_nodes(node_ids: list[str]) -> list[dict[str, Any]]:
         
         # Final flush: drain remaining buffer
         _flush_batch(batch_buffer)
+    
+    # Log test summary
+    total_done = len(updated_nodes_map)
+    if total_done > 0:
+        status_counts: dict[str, int] = {}
+        for res in updated_nodes_map.values():
+            st = res.get("probe_status", "unknown")
+            status_counts[st] = status_counts.get(st, 0) + 1
+        parts = [f"{k}={v}" for k, v in sorted(status_counts.items())]
+        print(f"[批量测试] 完成 {total_done} 个节点: {', '.join(parts)}", flush=True)
+        log_to_json("INFO", "Main", f"批量测试完成: {', '.join(parts)}")
                 
     # 批量查询并丰富可用节点的地理及 ISP 信息，防止并发时被定位 API 接口限流
     successful_nodes = [res for res in updated_nodes_map.values() if res.get("probe_status") == "available"]
@@ -1949,9 +1971,14 @@ def test_multiple_nodes(node_ids: list[str]) -> list[dict[str, Any]]:
     return list(updated_nodes_map.values())
 
 def auto_switch_node(attempt: int = 0) -> None:
-    if attempt >= 3:
-        print("[自动切换] 连续切换失败已达 3 次，停止切换以防止主线程死锁，将在后台重新加载节点...", flush=True)
+    max_attempts = 3
+    if attempt >= max_attempts:
+        print("[自动切换] 连续切换失败已达最大次数，停止切换以防止主线程死锁，将在后台重新加载节点...", flush=True)
         return
+    if attempt > 0:
+        delay = min(2 ** attempt, 30)
+        print(f"[自动切换] 第 {attempt} 次重试，等待 {delay}s...", flush=True)
+        time.sleep(delay)
         
     ui_cfg = load_ui_config()
     connection_enabled = ui_cfg.get("connection_enabled", True)
@@ -6348,6 +6375,7 @@ def main() -> None:
             "saturation_multiplier": SATURATION_MULTIPLIER,
             "batch_flush_size": BATCH_FLUSH_SIZE,
             "grace_cycles": GRACE_CYCLES,
+            "max_test_workers": MAX_TEST_WORKERS,
             "cert_templates_count": len(_discover_cert_templates()),
             "local_proxy": f"http://{'[' + LOCAL_PROXY_HOST + ']' if ':' in LOCAL_PROXY_HOST else LOCAL_PROXY_HOST}:{LOCAL_PROXY_PORT}",
             "active_openvpn_node_id": "",
