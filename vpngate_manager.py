@@ -5722,6 +5722,19 @@ class Handler(BaseHTTPRequestHandler):
         print(f"[{self.log_date_time_string()}] {format % args}", flush=True)
 
     def send_bytes(self, body: bytes, content_type: str, status: HTTPStatus = HTTPStatus.OK) -> None:
+        accept_encoding = self.headers.get("Accept-Encoding", "")
+        if "gzip" in accept_encoding and len(body) > 1024:
+            import gzip
+            compressed = gzip.compress(body, compresslevel=6)
+            if len(compressed) < len(body):
+                self.send_response(status)
+                self.send_header("Content-Type", content_type)
+                self.send_header("Content-Encoding", "gzip")
+                self.send_header("Content-Length", str(len(compressed)))
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.wfile.write(compressed)
+                return
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
