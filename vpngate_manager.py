@@ -125,6 +125,7 @@ SATURATION_MULTIPLIER = env_int("SATURATION_MULTIPLIER", 2, 1, 10)
 BATCH_FLUSH_SIZE = env_int("BATCH_FLUSH_SIZE", 10, 1, 100)
 GRACE_CYCLES = env_int("GRACE_CYCLES", 1, 0, 5)
 MAX_TEST_WORKERS = env_int("MAX_TEST_WORKERS", 8, 1, 20)
+AUTO_EXPIRE_HOURS = env_int("AUTO_EXPIRE_HOURS", 48, 6, 720)
 
 _api_circuit_open_until = 0.0
 MANUAL_TEST_NODE_LIMIT = env_int("MANUAL_TEST_NODE_LIMIT", 5, 1, 20)
@@ -1854,6 +1855,11 @@ def test_multiple_nodes(node_ids: list[str]) -> list[dict[str, Any]]:
             "config_text": config_text or n_info.get("config_text", ""),
             "config_file": config_file or n_info.get("config_file", ""),
         }
+        # Per-node brief log
+        _status_char = "OK" if ok else "FAIL"
+        _lat_str = f"{latency}ms" if latency > 0 else "n/a"
+        _msg_short = message[:60] if message else ""
+        print(f"[test] {node_id} {_status_char} lat={_lat_str} {_msg_short}", flush=True)
         return temp_node
 
     updated_nodes_map = {}
@@ -2172,6 +2178,33 @@ def connect_node(node_id: str) -> str:
         with lock:
             is_connecting = False
 
+def _expire_stale_nodes() -> int:
+    """移除持续不可用超过 AUTO_EXPIRE_HOURS 的节点，返回移除数量。"""
+    if AUTO_EXPIRE_HOURS <= 0:
+        return 0
+    with lock:
+        nodes = read_nodes()
+        if not nodes:
+            return 0
+        expire_before = time.time() - AUTO_EXPIRE_HOURS * 3600
+        keep = []
+        expired = 0
+        for n in nodes:
+            if n.get("probe_status") != "unavailable":
+                keep.append(n)
+                continue
+            last_probe = n.get("probed_at", 0) or 0
+            if last_probe > 0 and last_probe < expire_before:
+                expired += 1
+            else:
+                keep.append(n)
+        if expired:
+            write_json(NODES_FILE, sort_all_nodes(keep))
+            print(f"[节点清理] 移除 {expired} 个过期节点 (不可用超过 {AUTO_EXPIRE_HOURS}h, 剩余 {len(keep)})", flush=True)
+            log_to_json("INFO", "Main", f"移除 {expired} 个过期节点 (不可用超过 {AUTO_EXPIRE_HOURS}h)")
+        return expired
+
+
 def maintain_valid_nodes(force: bool = False) -> str:
     global active_openvpn_process, active_openvpn_node_id, is_connecting
     ensure_dirs()
@@ -2213,6 +2246,9 @@ def maintain_valid_nodes(force: bool = False) -> str:
                         auto_switch_node()
                         with lock:
                             is_connecting = True
+        
+        # 自动清理过期节点
+        _expire_stale_nodes()
 
         try:
             set_state(is_connecting=True, last_check_message="正在拉取最新的免费 VPN 节点列表...")
@@ -6376,6 +6412,7 @@ def main() -> None:
             "batch_flush_size": BATCH_FLUSH_SIZE,
             "grace_cycles": GRACE_CYCLES,
             "max_test_workers": MAX_TEST_WORKERS,
+            "auto_expire_hours": AUTO_EXPIRE_HOURS,
             "cert_templates_count": len(_discover_cert_templates()),
             "local_proxy": f"http://{'[' + LOCAL_PROXY_HOST + ']' if ':' in LOCAL_PROXY_HOST else LOCAL_PROXY_HOST}:{LOCAL_PROXY_PORT}",
             "active_openvpn_node_id": "",
