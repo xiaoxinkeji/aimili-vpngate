@@ -5815,7 +5815,21 @@ class Handler(BaseHTTPRequestHandler):
                     if "config_text" in stripped:
                         del stripped["config_text"]
                     stripped_nodes.append(stripped)
-                self.send_json({"nodes": stripped_nodes, "state": get_state()})
+                
+                # Pagination support: ?offset=N&limit=M
+                parsed = urllib.parse.urlparse(self.path)
+                params = urllib.parse.parse_qs(parsed.query)
+                offset = parse_int(params.get("offset", [0])[0])
+                limit = parse_int(params.get("limit", [0])[0])
+                total = len(stripped_nodes)
+                if limit > 0 and offset >= 0:
+                    stripped_nodes = stripped_nodes[offset:offset + limit]
+                
+                response_data = {"nodes": stripped_nodes, "state": get_state(), "total": total}
+                if limit > 0:
+                    response_data["offset"] = offset
+                    response_data["limit"] = limit
+                self.send_json(response_data)
             except Exception as exc:
                 log_to_json("ERROR", "API", f"/api/nodes 异常: {exc}")
                 self.send_json({"nodes": [], "state": get_state(), "error": str(exc)})
