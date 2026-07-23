@@ -6733,8 +6733,8 @@ class Tee:
             pass
 
     def __getattr__(self, attr: str) -> Any:
-        if attr == 'file' and getattr(self, 'file', None) is None:
-            return None
+        if attr == 'file':
+            return self.__dict__.get('file', None)
         return getattr(self.stdout, attr)
 
 def main() -> None:

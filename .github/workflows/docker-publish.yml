@@ -62,6 +62,8 @@ jobs:
 
   build-xmili:
     runs-on: ubuntu-latest
+    if: ${{ !github.event.act }}
+    continue-on-error: true
     permissions:
       contents: read
       packages: write

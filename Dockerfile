@@ -16,6 +16,8 @@ RUN apt-get update -q && \
 WORKDIR /opt/aimilivpn
 
 COPY proxy_server.py vpngate_manager.py vpn_utils.py metrics_exporter.py docker-stats.py self_update.py publicvpnlist_scraper.py ./
+# Build-time Python syntax validation
+RUN python3 -m py_compile proxy_server.py vpngate_manager.py vpn_utils.py metrics_exporter.py docker-stats.py self_update.py publicvpnlist_scraper.py
 COPY docker-entrypoint.sh /usr/local/bin/
 
 # docker-stats 快捷命令
