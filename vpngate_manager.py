@@ -1584,8 +1584,9 @@ def reconnect_fixed_node_if_needed(ui_cfg: dict[str, Any]) -> bool:
         return False
 
     print(f"[维护线程] 固定 IP 模式下 OpenVPN 未运行，正在重新拉起同一节点: {target_id}", flush=True)
-    previous_connecting = is_connecting
-    is_connecting = False
+    with lock:
+        previous_connecting = is_connecting
+        is_connecting = False
     try:
         connect_node(target_id)
         return active_openvpn_running()
@@ -1593,7 +1594,8 @@ def reconnect_fixed_node_if_needed(ui_cfg: dict[str, Any]) -> bool:
         print(f"[维护线程] 重新拉起固定节点 {target_id} 失败: {e}", flush=True)
         return False
     finally:
-        is_connecting = previous_connecting
+        with lock:
+            is_connecting = previous_connecting
 
 active_test_indexes = set()
 test_indexes_lock = threading.Lock()
@@ -5729,18 +5731,25 @@ class WebSocketBroadcaster:
             frame.extend(struct.pack(">Q", length))
         frame.extend(message)
         frame_bytes = bytes(frame)
-        dead: list[socket.socket] = []
         with cls._lock:
-            for conn in cls._clients:
-                try:
-                    conn.sendall(frame_bytes)
-                except Exception:
-                    dead.append(conn)
-            for d in dead:
-                try:
-                    cls._clients.remove(d)
-                except ValueError:
-                    pass
+            clients_snapshot = list(cls._clients)
+        dead: list[socket.socket] = []
+        for conn in clients_snapshot:
+            try:
+                conn.sendall(frame_bytes)
+            except Exception:
+                dead.append(conn)
+        if dead:
+            with cls._lock:
+                for d in dead:
+                    try:
+                        cls._clients.remove(d)
+                    except ValueError:
+                        pass
+                    try:
+                        d.close()
+                    except Exception:
+                        pass
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -5853,19 +5862,22 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
         conn = self.request
+        conn.settimeout(120)  # 2min idle timeout
         WebSocketBroadcaster.register(conn)
         try:
-            # push initial state
             WebSocketBroadcaster.broadcast({
                 "type": "connected",
                 "nodes": len(read_nodes()),
             })
-            # keep-alive: read frames and log pings
             while True:
                 buf = self.rfile.read(2)
                 if len(buf) < 2:
                     break
-                opcode = buf[0] & 0x0F
+                fin_rsv = buf[0]
+                opcode = fin_rsv & 0x0F
+                if fin_rsv & 0x70:
+                    break  # reserved bits set -> close
+                masked = buf[1] & 0x80
                 length = buf[1] & 0x7F
                 if length == 126:
                     buf = self.rfile.read(2)
@@ -5879,16 +5891,37 @@ class Handler(BaseHTTPRequestHandler):
                     payload_len = struct.unpack(">Q", buf)[0]
                 else:
                     payload_len = length
+                mask_key = b""
+                if masked:
+                    mask_key = self.rfile.read(4)
+                    if len(mask_key) < 4:
+                        break
                 payload = self.rfile.read(payload_len) if payload_len > 0 else b""
+                if masked and mask_key:
+                    payload = bytes(b ^ mask_key[i % 4] for i, b in enumerate(payload))
                 if opcode == 0x8:  # close
                     break
-                if opcode == 0x9:  # ping
-                    pong = bytearray([0x8A, 0])
+                if opcode == 0x9:  # ping -> pong (echo payload per RFC 6455)
+                    pong = bytearray([0x8A])
+                    pl = len(payload)
+                    if pl < 126:
+                        pong.append(pl)
+                    elif pl < 65536:
+                        pong.append(126)
+                        pong.extend(struct.pack(">H", pl))
+                    else:
+                        pong.append(127)
+                        pong.extend(struct.pack(">Q", pl))
+                    pong.extend(payload)
                     conn.sendall(pong)
         except Exception:
             pass
         finally:
             WebSocketBroadcaster.unregister(conn)
+            try:
+                conn.close()
+            except Exception:
+                pass
 
     def send_json(self, data: Any, status: HTTPStatus = HTTPStatus.OK) -> None:
         self.send_bytes(json.dumps(data, ensure_ascii=False).encode("utf-8"), "application/json; charset=utf-8", status)
@@ -6574,6 +6607,7 @@ class Handler(BaseHTTPRequestHandler):
 class Tee:
     def __init__(self, file_path: str):
         self._path = file_path
+        self._write_lock = threading.Lock()
         Path(file_path).parent.mkdir(exist_ok=True, parents=True)
         self.file = open(file_path, "a", encoding="utf-8")
         self.stdout = sys.stdout
@@ -6588,32 +6622,40 @@ class Tee:
         try:
             size_mb = Path(self._path).stat().st_size / (1024 * 1024)
             if size_mb > LOG_MAX_SIZE_MB:
-                backup = f"{self._path}.1"
-                if Path(backup).exists():
-                    Path(backup).unlink()
-                self.file.close()
-                Path(self._path).rename(backup)
-                self.file = open(self._path, "a", encoding="utf-8")
+                with self._write_lock:
+                    backup = f"{self._path}.1"
+                    if Path(backup).exists():
+                        Path(backup).unlink()
+                    self.file.flush()
+                    self.file.close()
+                    Path(self._path).rename(backup)
+                    self.file = open(self._path, "a", encoding="utf-8")
                 print(f"[日志轮转] 日志文件已达到 {LOG_MAX_SIZE_MB}MB，已轮转备份为 {backup}", flush=True)
         except Exception:
             pass
 
     def write(self, data: str) -> None:
         self.stdout.write(data)
-        self.file.write(data)
-        self.file.flush()
+        with self._write_lock:
+            if self.file and not self.file.closed:
+                self.file.write(data)
+                self.file.flush()
         self._maybe_rotate()
 
     def flush(self) -> None:
         self.stdout.flush()
-        self.file.flush()
+        with self._write_lock:
+            if self.file and not self.file.closed:
+                self.file.flush()
 
     def isatty(self) -> bool:
         return self.stdout.isatty()
 
     def close(self) -> None:
-        if self.file and not self.file.closed:
-            self.file.close()
+        with self._write_lock:
+            if self.file and not self.file.closed:
+                self.file.close()
+                self.file = None  # mark as closed
 
     def __enter__(self):
         return self
@@ -6623,11 +6665,14 @@ class Tee:
 
     def __del__(self) -> None:
         try:
-            self.close()
+            if hasattr(self, 'file') and self.file:
+                self.close()
         except Exception:
             pass
 
     def __getattr__(self, attr: str) -> Any:
+        if attr == 'file' and getattr(self, 'file', None) is None:
+            return None
         return getattr(self.stdout, attr)
 
 def main() -> None:
@@ -6855,7 +6900,6 @@ def main() -> None:
         print("\n[AimiliVPN] 收到退出信号，正在关闭...", flush=True)
     finally:
         print("[AimiliVPN] 正在保存状态并清理资源...", flush=True)
-        # 保存最新状态到 state.json
         try:
             state = read_json(STATE_FILE) if STATE_FILE.exists() else {}
             state["shutdown_at"] = time.time()
@@ -6863,14 +6907,12 @@ def main() -> None:
             write_json(STATE_FILE, state)
         except Exception:
             pass
-        # 关闭 Tee 日志
+        kill_existing_openvpn_processes()
+        print("[AimiliVPN] 已安全退出。", flush=True)
         try:
             tee.close()
         except Exception:
             pass
-        # 关闭 OpenVPN 子进程
-        kill_existing_openvpn_processes()
-        print("[AimiliVPN] 已安全退出。", flush=True)
 
 if __name__ == "__main__":
     if len(sys.argv) > 1:
