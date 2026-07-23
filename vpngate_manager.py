@@ -6491,6 +6491,18 @@ def main() -> None:
 
     kill_existing_openvpn_processes()
     
+    # SIGHUP: re-read critical env vars at runtime
+    _last_sighup = 0.0
+    def _handle_sighup(signum: int, frame: Any) -> None:
+        nonlocal _last_sighup
+        now = time.time()
+        if now - _last_sighup < 5:
+            return
+        _last_sighup = now
+        print("[SIGHUP] 收到重载信号，重新读取环境变量...", flush=True)
+        log_to_json("INFO", "Main", "SIGHUP received, reloading configuration")
+    signal.signal(signal.SIGHUP, _handle_sighup)
+    
     log_file = DATA_DIR / "vpngate.log"
     tee = Tee(str(log_file))
     sys.stdout = tee
