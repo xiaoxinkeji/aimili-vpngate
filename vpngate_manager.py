@@ -1905,6 +1905,16 @@ def test_multiple_nodes(node_ids: list[str]) -> list[dict[str, Any]]:
                     n.pop("grace_cycles_remaining", None)
                 n.update(res)
             write_json(NODES_FILE, sort_all_nodes(current_nodes))
+            # WebSocket push after batch flush
+            try:
+                changed_ids = list(buffer.keys())
+                WebSocketBroadcaster.broadcast({
+                    "type": "nodes_updated",
+                    "count": len(changed_ids),
+                    "ids": changed_ids[:50],
+                })
+            except Exception:
+                pass
     
     batch_buffer: dict[str, dict[str, Any]] = {}
     last_flush = time.time()
@@ -2205,6 +2215,10 @@ def _expire_stale_nodes() -> int:
             write_json(NODES_FILE, sort_all_nodes(keep))
             print(f"[节点清理] 移除 {expired} 个过期节点 (不可用超过 {AUTO_EXPIRE_HOURS}h, 剩余 {len(keep)})", flush=True)
             log_to_json("INFO", "Main", f"移除 {expired} 个过期节点 (不可用超过 {AUTO_EXPIRE_HOURS}h)")
+            try:
+                WebSocketBroadcaster.broadcast({"type": "nodes_expired", "count": expired})
+            except Exception:
+                pass
         return expired
 
 
@@ -5654,6 +5668,56 @@ def active_node_pinger() -> None:
         time.sleep(10)
 
 
+class WebSocketBroadcaster:
+    """简易 WebSocket 广播器，用于向 Dashboard 推送节点状态变更"""
+
+    _clients: list[Any] = []
+    _lock = threading.Lock()
+
+    @classmethod
+    def register(cls, conn: socket.socket) -> None:
+        with cls._lock:
+            cls._clients.append(conn)
+
+    @classmethod
+    def unregister(cls, conn: socket.socket) -> None:
+        with cls._lock:
+            try:
+                cls._clients.remove(conn)
+            except ValueError:
+                pass
+
+    @classmethod
+    def broadcast(cls, payload: dict[str, Any]) -> None:
+        import struct
+        message = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        frame = bytearray()
+        frame.append(0x81)  # FIN + text opcode
+        length = len(message)
+        if length < 126:
+            frame.append(length)
+        elif length < 65536:
+            frame.append(126)
+            frame.extend(struct.pack(">H", length))
+        else:
+            frame.append(127)
+            frame.extend(struct.pack(">Q", length))
+        frame.extend(message)
+        frame_bytes = bytes(frame)
+        dead: list[socket.socket] = []
+        with cls._lock:
+            for conn in cls._clients:
+                try:
+                    conn.sendall(frame_bytes)
+                except Exception:
+                    dead.append(conn)
+            for d in dead:
+                try:
+                    cls._clients.remove(d)
+                except ValueError:
+                    pass
+
+
 class Handler(BaseHTTPRequestHandler):
     def get_secret_path(self) -> str:
         ui_cfg = load_ui_config()
@@ -5747,6 +5811,60 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _handle_websocket_upgrade(self) -> None:
+        import hashlib, struct
+        ws_key = self.headers.get("Sec-WebSocket-Key", "")
+        if not ws_key:
+            self.send_response(HTTPStatus.BAD_REQUEST)
+            self.end_headers()
+            return
+        accept = base64.b64encode(
+            hashlib.sha1((ws_key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode()).digest()
+        ).decode()
+        self.send_response(HTTPStatus.SWITCHING_PROTOCOLS)
+        self.send_header("Upgrade", "websocket")
+        self.send_header("Connection", "Upgrade")
+        self.send_header("Sec-WebSocket-Accept", accept)
+        self.end_headers()
+
+        conn = self.request
+        WebSocketBroadcaster.register(conn)
+        try:
+            # push initial state
+            WebSocketBroadcaster.broadcast({
+                "type": "connected",
+                "nodes": len(read_nodes()),
+            })
+            # keep-alive: read frames and log pings
+            while True:
+                buf = self.rfile.read(2)
+                if len(buf) < 2:
+                    break
+                opcode = buf[0] & 0x0F
+                length = buf[1] & 0x7F
+                if length == 126:
+                    buf = self.rfile.read(2)
+                    if len(buf) < 2:
+                        break
+                    payload_len = struct.unpack(">H", buf)[0]
+                elif length == 127:
+                    buf = self.rfile.read(8)
+                    if len(buf) < 8:
+                        break
+                    payload_len = struct.unpack(">Q", buf)[0]
+                else:
+                    payload_len = length
+                payload = self.rfile.read(payload_len) if payload_len > 0 else b""
+                if opcode == 0x8:  # close
+                    break
+                if opcode == 0x9:  # ping
+                    pong = bytearray([0x8A, 0])
+                    conn.sendall(pong)
+        except Exception:
+            pass
+        finally:
+            WebSocketBroadcaster.unregister(conn)
+
     def send_json(self, data: Any, status: HTTPStatus = HTTPStatus.OK) -> None:
         self.send_bytes(json.dumps(data, ensure_ascii=False).encode("utf-8"), "application/json; charset=utf-8", status)
 
@@ -5770,6 +5888,11 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         effective_path = self.validate_path()
         if effective_path == "": return
+
+        # WebSocket upgrade (before rate limit / auth)
+        if effective_path == "/ws":
+            self._handle_websocket_upgrade()
+            return
 
         # CORS preflight
         if self.command == "OPTIONS":
