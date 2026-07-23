@@ -6649,17 +6649,59 @@ def main() -> None:
 
     kill_existing_openvpn_processes()
     
-    # SIGHUP: re-read critical env vars at runtime
+    # ─── 优雅停机 + SIGHUP 热重载 ───
+    _shutdown_requested = False
     _last_sighup = 0.0
-    def _handle_sighup(signum: int, frame: Any) -> None:
-        nonlocal _last_sighup
-        now = time.time()
-        if now - _last_sighup < 5:
+
+    def _reload_env_vars() -> None:
+        """Hot-reload: re-read critical env vars at runtime."""
+        nonlocal _shutdown_requested
+        # API 速率限制 (v1.7.0)
+        new_rate = env_int("API_RATE_LIMIT_PER_MINUTE", 60, 5, 600)
+        # Worker 自适应阈值 (v1.9.0)
+        new_cpu = env_float("WORKER_CPU_LOAD_LIMIT", 0.7, 0.1, 2.0)
+        new_mem = env_int("WORKER_MEM_LIMIT_MB", 500, 100, 4096)
+        # 检测周期冷却 (v1.4.0)
+        new_cooldown = env_int("RETEST_COOLDOWN_SECONDS", 900, 0, 86400)
+        # API 断路器 (v1.4.1)
+        new_circuit = env_int("API_CIRCUIT_BREAKER_SECONDS", 600, 0, 86400)
+        changed = []
+        if new_rate != API_RATE_LIMIT_PER_MINUTE:
+            globals()["API_RATE_LIMIT_PER_MINUTE"] = new_rate; changed.append(f"API_RATE_LIMIT_PER_MINUTE={new_rate}")
+        if new_cpu != WORKER_CPU_LOAD_LIMIT:
+            globals()["WORKER_CPU_LOAD_LIMIT"] = new_cpu; changed.append(f"WORKER_CPU_LOAD_LIMIT={new_cpu}")
+        if new_mem != WORKER_MEM_LIMIT_MB:
+            globals()["WORKER_MEM_LIMIT_MB"] = new_mem; changed.append(f"WORKER_MEM_LIMIT_MB={new_mem}")
+        if new_cooldown != RETEST_COOLDOWN_SECONDS:
+            globals()["RETEST_COOLDOWN_SECONDS"] = new_cooldown; changed.append(f"RETEST_COOLDOWN_SECONDS={new_cooldown}")
+        if new_circuit != API_CIRCUIT_BREAKER_SECONDS:
+            globals()["API_CIRCUIT_BREAKER_SECONDS"] = new_circuit; changed.append(f"API_CIRCUIT_BREAKER_SECONDS={new_circuit}")
+        if changed:
+            print(f"[SIGHUP] 配置已重载: {', '.join(changed)}", flush=True)
+            log_to_json("INFO", "Main", f"Hot-reloaded: {', '.join(changed)}")
+        else:
+            print("[SIGHUP] 环境变量已读取，无变更", flush=True)
+
+    def _handle_signal(signum: int, frame: Any) -> None:
+        nonlocal _shutdown_requested, _last_sighup
+        if signum == signal.SIGHUP:
+            now = time.time()
+            if now - _last_sighup < 5:
+                return
+            _last_sighup = now
+            _reload_env_vars()
             return
-        _last_sighup = now
-        print("[SIGHUP] 收到重载信号，重新读取环境变量...", flush=True)
-        log_to_json("INFO", "Main", "SIGHUP received, reloading configuration")
-    signal.signal(signal.SIGHUP, _handle_sighup)
+        # SIGTERM / SIGINT
+        if _shutdown_requested:
+            return
+        _shutdown_requested = True
+        sig_name = signal.Signals(signum).name
+        print(f"\n[{sig_name}] 收到关闭信号，正在优雅停机...", flush=True)
+        log_to_json("INFO", "Main", f"Received {sig_name}, shutting down gracefully")
+
+    signal.signal(signal.SIGHUP, _handle_signal)
+    signal.signal(signal.SIGTERM, _handle_signal)
+    signal.signal(signal.SIGINT, _handle_signal)
     
     log_file = DATA_DIR / "vpngate.log"
     tee = Tee(str(log_file))
@@ -6803,10 +6845,42 @@ def main() -> None:
     # 后台检查更新 (非阻塞)
     threading.Thread(target=self_update.start_update_checker, daemon=True).start()
 
+    # 优雅停机监控线程: 定期检查 shutdown 标志
+    def _shutdown_monitor(http_server: DualStackHTTPServer) -> None:
+        while not _shutdown_requested:
+            time.sleep(0.5)
+        # 1. 通知 WebSocket 客户端
+        WebSocketBroadcaster.broadcast({"type": "shutdown", "message": "Server is shutting down"})
+        # 2. 关闭 HTTP 服务器 (不再接受新连接)
+        http_server.shutdown()
+        # 3. 等待已有连接 drain (最多 5s)
+        time.sleep(1)
+
+    httpd = DualStackHTTPServer((ui_host, ui_port), Handler)
+    threading.Thread(target=_shutdown_monitor, args=(httpd,), daemon=True).start()
+
     try:
-        DualStackHTTPServer((ui_host, ui_port), Handler).serve_forever()
+        httpd.serve_forever()
     except KeyboardInterrupt:
         print("\n[AimiliVPN] 收到退出信号，正在关闭...", flush=True)
+    finally:
+        print("[AimiliVPN] 正在保存状态并清理资源...", flush=True)
+        # 保存最新状态到 state.json
+        try:
+            state = read_json(STATE_FILE) if STATE_FILE.exists() else {}
+            state["shutdown_at"] = time.time()
+            state["shutdown_reason"] = "graceful"
+            write_json(STATE_FILE, state)
+        except Exception:
+            pass
+        # 关闭 Tee 日志
+        try:
+            tee.close()
+        except Exception:
+            pass
+        # 关闭 OpenVPN 子进程
+        kill_existing_openvpn_processes()
+        print("[AimiliVPN] 已安全退出。", flush=True)
 
 if __name__ == "__main__":
     if len(sys.argv) > 1:
