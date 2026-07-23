@@ -95,9 +95,9 @@
   - API gzip 压缩 (>1024 bytes) → 分页 (/api/nodes?offset=N&limit=M)
   - AUTO_EXPIRE_HOURS=48: 持续不可用超时自动移除节点
 
-### API 高可用 + Worker 自适应 (v1.7.0-v1.9.0)
+### API 高可用 + 运行时可观测性 (v1.7.0-v1.12.0)
 - Date: 2026-07-23
-- Context: Agent 在执行生产级 API 安全加固 + Worker 管理升级时实现
+- Context: Agent 在执行生产级 API 安全加固 + Worker 管理 + 优雅停机 + 结构化日志时实现
 - Category: 运维部署
 - Instructions:
   - API 速率限制: `API_RATE_LIMIT_PER_MINUTE` (默认 60), IP 级别限流, 超限返回 429
@@ -105,8 +105,11 @@
   - CORS: 所有响应含 `Access-Control-Allow-Origin: *` + OPTIONS 预检
   - 日志轮转: `LOG_MAX_SIZE_MB` (默认 50), Tee 类内置轮转, 每 60s 检查
   - SIGHUP 热重载: 5s 防抖, 为运行时配置热更新预留钩子
-  - Worker 自适应 v2: CPU loadavg 监控 (`/proc/loadavg`, `WORKER_CPU_LOAD_LIMIT=0.7`) + 内存阈值 (`WORKER_MEM_LIMIT_MB=500`)
-  - `/ws` WebSocket 实时推送: `nodes_updated` + `nodes_expired` 事件广播
+  - Worker 自适应 v2: CPU loadavg (`/proc/loadavg`, `WORKER_CPU_LOAD_LIMIT=0.7`) + 内存阈值 (`WORKER_MEM_LIMIT_MB=500`)
+  - `/ws` WebSocket 实时推送: `nodes_updated` + `nodes_expired` 事件广播，死连接自动清理
+  - SIGTERM/SIGINT 优雅停机: 广播 WebSocket shutdown → 关闭 HTTP 服务 → 保存 state.json → kill OpenVPN
+  - SIGHUP 热重载: 运行时重读 5 个关键环境变量 (RATE_LIMIT, CPU_LOAD, MEM_LIMIT, COOLDOWN, CIRCUIT_BREAKER)
+  - `emit(level, module, message)`: 统一 print + log_to_json 接口，Fetcher/Collector/Maintenance/VPN 模块已迁移
   - 新增 `env_float()` 工具函数支持浮点型环境变量
   - `vpngate_manager.py` 是 ~6900 行的单文件 Python 应用 (标准库 only)
   - `metrics_exporter.py` 是独立的 Prometheus sidecar，也仅用标准库
