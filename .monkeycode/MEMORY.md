@@ -77,53 +77,36 @@
 - Instructions:
   - x-mili submodule 引用 `Aimilibot/X-MILI.git` 的 commit `071dc46`
   - 上游仓库无 push 权限，集成代码在 `xmili-integration/` 目录维护
+  - Submodule 内改动需在子模块内切分支 (格式: `YYMMDD-(feat|fix|chore|refactor)-描述`)、提交、推送，使用 `-o merge_request.create` 自动创建 MR
+  - 主项目需更新 submodule 引用并单独提交
   - Docker 构建: `Dockerfile.xmili` 将 `xmili-integration/vpngate_aimili.go` 和 `vpngate.patch` COPY 到 x-mili 源码中
-  - Submodule 有改动时需先 `git checkout` 清理，避免本地修改污染
-  - 如需合入上游，需先获得仓库 push 权限后推送并更新 submodule 引用
 
-### Submodule 提交工作流
-- Date: 2026-07-19
-- Context: Agent 在执行子模块代码管理时记录
-- Category: 工作流协作
-- Instructions:
-  - Submodule 内改动需在子模块内切分支、提交、推送
-  - 主项目需更新 submodule 引用 commit 并单独提交
-  - 分支命名格式: `YYMMDD-(feat|fix|chore|refactor)-简短描述`
-  - 推送时使用 MR 自动创建参数: `-o merge_request.create`
-
-### 智能检测周期优化 (v1.4.0-v1.5.1)
+### 检测效率 + 弹性容错 + 可观测性 (v1.4.0-v1.6.4)
 - Date: 2026-07-20
-- Context: Agent 在执行周期检测性能优化时实现
-- Category: 排错调试
+- Context: Agent 在执行周期检测性能优化与可观测性增强时实现
+- Category: 运维部署 / 排错调试
 - Instructions:
-  - `RETEST_COOLDOWN_SECONDS` (默认 900s): 冷却期内 `unavailable` 节点跳过重测，not_checked/testing 始终参与
-  - `WARMUP_CHECK_INTERVAL_SECONDS` (默认 60s): 可用节点不足 `TARGET_VALID_NODES` 时加速检测
-  - `PROGRESSIVE_ABORT_THRESHOLD` (默认 50): 首批 N 个节点全部不可用时跳过剩余测试
-  - `SATURATION_MULTIPLIER` (默认 2): 可用节点数达到目标 N 倍时跳过本轮检测
-  - 待测节点按 `latency_ms` 升序排列，无延迟数据的排最后
-  - 预热日志: `[预热模式] 可用节点不足 (X/Y)，快速周期 Ns`
-  - 渐进终止日志: `[渐进终止] 前 N 个节点全部不可用，跳过剩余 M 个节点`
-  - 所有配置项通过 State API (`/api/nodes`) 的 `state` 字段对外暴露
+  - 检测效率四层优化: 冷却跳过 (RETEST_COOLDOWN_SECONDS=900) → 预热加速 (WARMUP_CHECK_INTERVAL_SECONDS=60) → 延迟排序 → 渐进终止/饱和跳过
+  - 弹性容错: 电池浮 (GRACE_CYCLES=1) → API 断路器 (API_CIRCUIT_BREAKER_SECONDS=600) → 指数退避重连
+  - I/O 优化: BATCH_FLUSH_SIZE=10 批量刷盘 (I/O 降 90%)
+  - `_discover_cert_templates()`: 扫描 <ca>/<cert>/<key> 块提取独立证书组合，SHA256 去重，持久化到 cert_templates.json
+  - AUTH_FAILED 节点自动尝试替代模板重测
+  - Prometheus `/metrics` (9798 端口): 30+ 指标，由 sidecar `metrics_exporter.py` 读取 state.json + nodes.json 生成
+  - API gzip 压缩 (>1024 bytes) → 分页 (/api/nodes?offset=N&limit=M)
+  - AUTO_EXPIRE_HOURS=48: 持续不可用超时自动移除节点
 
-### 多模板证书发现 (v1.5.0)
-- Date: 2026-07-20
-- Context: Agent 在解决 PVL 节点 AUTH_FAILED 问题时实现
-- Category: 排错调试
-- Instructions:
-  - `_discover_cert_templates()`: 扫描所有节点 config_text，从 <ca>/<cert>/<key> 块提取独立证书组合，SHA256 去重
-  - 模板持久化到 `cert_templates.json`，状态 API 暴露 `cert_templates_count`
-  - AUTH_FAILED 节点自动尝试替代模板重测，最多扫描所有模板
-  - 适用于 vpngate API 恢复后可发现多套证书组合
-
-### Prometheus 可观测性增强 (v1.6.0-v1.6.1)
-- Date: 2026-07-20
-- Context: Agent 在执行生产级可观测性增强时实现
+### API 高可用 + Worker 自适应 (v1.7.0-v1.9.0)
+- Date: 2026-07-23
+- Context: Agent 在执行生产级 API 安全加固 + Worker 管理升级时实现
 - Category: 运维部署
 - Instructions:
-  - Prometheus `/metrics` 端点 (9798 端口) 新增 7 个指标: cycle_duration_seconds, cycle_tested/skipped/saturated, api_fetch_total, api_fetch_failure_total, grace_nodes
-  - 指标由 sidecar `metrics_exporter.py` 读取 `state.json` + `nodes.json` 生成
-  - `MAX_TEST_WORKERS` (默认 8): worker 数按节点池规模自适应 (每 50 节点 +1 worker)
-  - 内存压力保护: >500MB 限制 3 workers, >300MB 限制 5 workers
-  - `auto_switch_node` 指数退避: 2s/4s 间隔 (上限 30s)，替代立即重试
-  - 批量测试完成后输出状态分布摘要: `[批量测试] 完成 N 个节点: available=X, unavailable=Y`
-  - `/health` 端点返回 200 或 503 (基于 manager 进程存活)
+  - API 速率限制: `API_RATE_LIMIT_PER_MINUTE` (默认 60), IP 级别限流, 超限返回 429
+  - `/health` + `/ready` 端点: 免认证健康检查 + 启动就绪探测
+  - CORS: 所有响应含 `Access-Control-Allow-Origin: *` + OPTIONS 预检
+  - 日志轮转: `LOG_MAX_SIZE_MB` (默认 50), Tee 类内置轮转, 每 60s 检查
+  - SIGHUP 热重载: 5s 防抖, 为运行时配置热更新预留钩子
+  - Worker 自适应 v2: CPU loadavg 监控 (`/proc/loadavg`, `WORKER_CPU_LOAD_LIMIT=0.7`) + 内存阈值 (`WORKER_MEM_LIMIT_MB=500`)
+  - `/ws` WebSocket 实时推送: `nodes_updated` + `nodes_expired` 事件广播
+  - 新增 `env_float()` 工具函数支持浮点型环境变量
+  - `vpngate_manager.py` 是 ~6900 行的单文件 Python 应用 (标准库 only)
+  - `metrics_exporter.py` 是独立的 Prometheus sidecar，也仅用标准库
