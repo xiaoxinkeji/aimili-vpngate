@@ -85,7 +85,7 @@ echo -e "  ${GREEN}✓ ${PY_VER}${PLAIN}"
 
 # 4. iptables 权限
 echo -e "${BOLD}[4/5]${PLAIN} 检查网络管理权限..."
-if iptables -L -n > /dev/null 2>&1; then
+if timeout 5 iptables -L -n -t filter > /dev/null 2>&1; then
     echo -e "  ${GREEN}✓ iptables 可用${PLAIN}"
 else
     echo -e "  ${YELLOW}⚠ iptables 不可用，策略路由功能可能受限${PLAIN}"

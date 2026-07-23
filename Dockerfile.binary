@@ -36,6 +36,7 @@ RUN pyinstaller --onefile --name aimilivpn --clean --noconfirm \
     vpngate_manager.py \
     && echo "${IMAGE_VERSION} (${GIT_COMMIT}) built ${BUILD_DATE}" > dist/version.txt
 
-FROM scratch
+FROM alpine:3.21
+RUN apk add --no-cache ca-certificates openvpn iptables iproute2
 COPY --from=builder /build/dist/aimilivpn /aimilivpn
 COPY --from=builder /build/dist/version.txt /version.txt

@@ -96,8 +96,7 @@ services:
         max-size: "20m"
         max-file: "3"
     depends_on:
-      aimilivpn:
-        condition: service_healthy
+      - aimilivpn
 
 volumes:
   aimili_data:

@@ -3,7 +3,7 @@
 # CI 自动构建: ghcr.io/xiaoxinkeji/x-mili-integrated
 # 本地构建: docker build -f Dockerfile.xmili -t xmili-aimili .
 
-FROM golang:1.26-alpine AS builder
+FROM golang:1.23-alpine AS builder
 WORKDIR /app
 ARG TARGETARCH
 
@@ -32,7 +32,7 @@ RUN for i in 1 2 3; do \
     (echo "DockerInit.sh attempt $i failed, retrying..." && sleep 10); \
     done
 
-FROM alpine
+FROM alpine:3.21
 ENV TZ=Asia/Tehran
 WORKDIR /app
 

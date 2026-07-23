@@ -38,7 +38,6 @@ services:
       - "--storage.tsdb.path=/prometheus"
       - "--storage.tsdb.retention.time=15d"
       - "--web.listen-address=:9091"
-      - "--web.enable-lifecycle"
     cpus: "1"
     mem_limit: 256m
 
@@ -48,6 +47,7 @@ services:
     restart: unless-stopped
     network_mode: host
     environment:
+      # WARNING: Change default admin credentials in production
       - GF_SECURITY_ADMIN_USER=admin
       - GF_SECURITY_ADMIN_PASSWORD=admin
       - GF_AUTH_ANONYMOUS_ENABLED=false

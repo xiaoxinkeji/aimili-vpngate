@@ -204,6 +204,7 @@ def create_connection(address: tuple[str, int], timeout: float = 20) -> socket.s
         host = resolved_ip
 
     err = None
+    # Fallback to system DNS is intentional: tun0 may not be ready for all hosts
     for res in socket.getaddrinfo(host, port, 0, socket.SOCK_STREAM):
         af, socktype, proto, canonname, sa = res
         sock = None
@@ -236,11 +237,11 @@ def relay(left: socket.socket, right: socket.socket) -> None:
         write_list = [s for s in sockets if s in write_bufs and len(write_bufs[s]) > 0]
         if not read_list and not write_list:
             read_list = sockets[:]
-        readable, writable, errored = select.select(read_list, write_list, sockets, 120)
+        readable, writable, errored = select.select(read_list, write_list, sockets, 30)
         if errored:
             return
         if not readable and not writable:
-            return
+            continue
         for sock in writable:
             buf = write_bufs.get(sock)
             if not buf:

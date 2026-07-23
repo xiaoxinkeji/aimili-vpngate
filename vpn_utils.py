@@ -268,7 +268,7 @@ def ping_latency_ms(host: str, port: int, fallback_ping: int = 0) -> int:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
-                timeout=2
+                timeout=3
             )
             if res.returncode == 0:
                 match = re.search(r"time=([\d.]+)\s*ms", res.stdout)
@@ -321,6 +321,7 @@ def check_and_fix_dns() -> None:
         pass
 
     network_ok = False
+    ipv6_available = False
     # Test IPv4 DNS servers first, then IPv6
     dns_targets = [
         ("8.8.8.8", 53, socket.AF_INET),
@@ -335,6 +336,8 @@ def check_and_fix_dns() -> None:
             s.settimeout(2)
             s.connect((ip, port))
             network_ok = True
+            if af == socket.AF_INET6:
+                ipv6_available = True
             break
         except Exception:
             pass
@@ -360,6 +363,8 @@ def check_and_fix_dns() -> None:
                 if line.startswith("nameserver "):
                     existing_nameservers.add(line.split()[1])
             missing = {"1.1.1.1", "8.8.8.8"} - existing_nameservers
+            if ipv6_available:
+                missing |= {"2606:4700:4700::1111", "2001:4860:4860::8888"} - existing_nameservers
             if not missing:
                 return
             print(f"[dns_heal] Resolving names failed, appending DNS: {missing}", flush=True)
@@ -600,7 +605,7 @@ def diagnose_openvpn_failure(log_tail: list[str]) -> tuple[int, str]:
     if "udpv4 link remote" in joined_log or "attempting to establish tcp connection" in joined_log:
         return 2004, "[ERR_OVPN_NODE_UNREACHABLE] 节点无响应。原因: OpenVPN 已发出连接请求但未收到任何回复，远程节点可能已下线或被防火墙屏蔽。"
         
-    if "connection timed out" in joined_log or "timeout" in joined_log:
+    if re.search(r'(?:connection|handshake|Inactivity)\s+timed?\s*out|TLS Error:.*timeout', joined_log):
         return 2004, "[ERR_OVPN_NODE_UNREACHABLE] 节点连接超时。原因: 远程节点已关机、VPS 本身出站流量被本地防火墙拦截，或者目的 IP:端口遭 ISP/GFW 屏蔽拦截。"
     if "connection refused" in joined_log:
         return 2004, "[ERR_OVPN_NODE_UNREACHABLE] 节点连接被拒绝。原因: 目的服务器未在指定端口监听，或者主动拒绝了连接。"

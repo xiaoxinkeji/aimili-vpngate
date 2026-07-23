@@ -244,10 +244,10 @@ import hashlib
 import random
 
 def generate_random_password() -> str:
-    import string
+    import secrets, string
     chars = string.ascii_letters + string.digits
     while True:
-        pwd = "".join(random.choices(chars, k=12))
+        pwd = "".join(secrets.choice(chars) for _ in range(12))
         # Ensure it contains at least one lowercase, one uppercase, and one digit
         has_lower = any(c.islower() for c in pwd)
         has_upper = any(c.isupper() for c in pwd)
@@ -341,10 +341,6 @@ try:
         UI_HOST = _init_cfg["host"]
 except Exception:
     pass
-
-def get_session_token(password: str, username: str = "admin") -> str:
-    salt = "aimilivpn_secure_salt_2026"
-    return hashlib.sha256((username + ":" + password + salt).encode("utf-8")).hexdigest()
 
 _last_cleanup_time = 0.0
 
@@ -2145,11 +2141,15 @@ def auto_switch_node(attempt: int = 0) -> None:
             except Exception as e:
                 print(f"[自动切换后台补齐] 获取并测试节点失败: {e}", flush=True)
             finally:
-                _recovery_thread_running = False
+                with _recovery_thread_lock:
+                    _recovery_thread_running = False
 
-        if not _recovery_thread_running:
-            _recovery_thread_running = True
-            threading.Thread(target=bg_fetch_and_switch, daemon=True).start()
+        with _recovery_thread_lock:
+            if not _recovery_thread_running:
+                _recovery_thread_running = True
+            else:
+                return
+        threading.Thread(target=bg_fetch_and_switch, daemon=True).start()
 
 def connect_node(node_id: str) -> str:
     global active_openvpn_process, active_openvpn_node_id, is_connecting
@@ -6101,6 +6101,8 @@ class Handler(BaseHTTPRequestHandler):
                 offset = parse_int(params.get("offset", [0])[0])
                 limit = parse_int(params.get("limit", [0])[0])
                 total = len(stripped_nodes)
+                if offset < 0:
+                    offset = 0
                 if limit > 0 and offset >= 0:
                     stripped_nodes = stripped_nodes[offset:offset + limit]
                 
@@ -6230,7 +6232,7 @@ class Handler(BaseHTTPRequestHandler):
                 })
             except Exception as exc:
                 log_to_json("ERROR", "API", f"/api/gateway_status 异常: {exc}")
-                self.send_json({"ok": False, "error": str(exc), "services": []})
+                self.send_json({"ok": False, "error": "Internal server error", "services": []})
         elif effective_path == "/api/logs":
             logs_dir = DATA_DIR / "logs"
             date_str = time.strftime("%Y-%m-%d", time.localtime())
@@ -6287,6 +6289,7 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_header("Content-Type", "application/json; charset=utf-8")
                     self.send_header("Content-Length", str(len(body)))
                     self.send_header("Cache-Control", "no-store")
+                    self.send_header("Access-Control-Allow-Origin", "*")
                     secret_path = self.get_secret_path()
                     cookie_path = f"/{secret_path}/" if secret_path else "/"
                     self.send_header("Set-Cookie", f"session={token}; Path={cookie_path}; HttpOnly; SameSite=Lax; Max-Age=2592000")
@@ -6295,7 +6298,7 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     self.send_json({"ok": False, "error": "用户名或密码不正确，请重新输入"}, HTTPStatus.FORBIDDEN)
             except Exception as exc:
-                self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+                self.send_json({"ok": False, "error": "Internal server error"}, HTTPStatus.INTERNAL_SERVER_ERROR)
             return
 
         if effective_path == "/api/logout":
@@ -6323,7 +6326,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(body)
             except Exception as exc:
-                self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+                self.send_json({"ok": False, "error": "Internal server error"}, HTTPStatus.INTERNAL_SERVER_ERROR)
             return
 
         if not self.is_authorized():
@@ -6388,7 +6391,7 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     self.send_json({"ok": True, "restart_needed": False, "reauth_required": reauth_required, "message": "账号密码配置更新成功，已即时生效！"})
             except Exception as exc:
-                self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+                self.send_json({"ok": False, "error": "Internal server error"}, HTTPStatus.INTERNAL_SERVER_ERROR)
             return
 
         elif effective_path == "/api/update_settings":
@@ -6459,7 +6462,7 @@ class Handler(BaseHTTPRequestHandler):
                     message = policy_message or "配置更新成功，已即时生效！"
                     self.send_json({"ok": True, "restart_needed": False, "message": message})
             except Exception as exc:
-                self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+                self.send_json({"ok": False, "error": "Internal server error"}, HTTPStatus.INTERNAL_SERVER_ERROR)
             return
 
         elif effective_path == "/api/update_routing":
@@ -6503,7 +6506,7 @@ class Handler(BaseHTTPRequestHandler):
                 
                 self.send_json({"ok": True, "message": policy_message or "出站路由配置更新成功，已即时生效！"})
             except Exception as exc:
-                self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+                self.send_json({"ok": False, "error": "Internal server error"}, HTTPStatus.INTERNAL_SERVER_ERROR)
             return
 
         elif effective_path == "/api/toggle_favorite":
@@ -6536,14 +6539,14 @@ class Handler(BaseHTTPRequestHandler):
                 
                 self.send_json({"ok": True, "favorite_node_ids": fav_ids, "message": policy_message or ""})
             except Exception as exc:
-                self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+                self.send_json({"ok": False, "error": "Internal server error"}, HTTPStatus.INTERNAL_SERVER_ERROR)
             return
 
         if effective_path == "/api/check":
             try:
                 self.send_json({"ok": True, "message": maintain_valid_nodes(force=True)})
             except Exception as exc:
-                self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+                self.send_json({"ok": False, "error": "Internal server error"}, HTTPStatus.INTERNAL_SERVER_ERROR)
         elif effective_path == "/api/refresh_nodes":
             try:
                 if maintenance_lock.locked():
@@ -6552,7 +6555,7 @@ class Handler(BaseHTTPRequestHandler):
                     threading.Thread(target=maintain_valid_nodes, args=(False,), daemon=True).start()
                     self.send_json({"ok": True, "message": "已在后台启动节点更新流程", "running": False})
             except Exception as exc:
-                self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+                self.send_json({"ok": False, "error": "Internal server error"}, HTTPStatus.INTERNAL_SERVER_ERROR)
         elif effective_path == "/api/test_nodes":
             try:
                 payload = self.read_json_body(max_bytes=262144)
@@ -6583,7 +6586,7 @@ class Handler(BaseHTTPRequestHandler):
                     set_state(is_connecting=False)
                     maintenance_lock.release()
             except Exception as exc:
-                self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+                self.send_json({"ok": False, "error": "Internal server error"}, HTTPStatus.INTERNAL_SERVER_ERROR)
         elif effective_path == "/api/disconnect":
             try:
                 ui_cfg = load_ui_config()
@@ -6605,13 +6608,13 @@ class Handler(BaseHTTPRequestHandler):
                 set_state(active_openvpn_node_id="", last_check_message="手动断开连接", active_node_latency="无活动连接")
                 self.send_json({"ok": True})
             except Exception as exc:
-                self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+                self.send_json({"ok": False, "error": "Internal server error"}, HTTPStatus.INTERNAL_SERVER_ERROR)
         elif effective_path == "/api/connect":
             try:
                 payload = self.read_json_body()
                 self.send_json({"ok": True, "message": connect_node(str(payload.get("node_id") or payload.get("id") or ""))})
             except Exception as exc:
-                self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+                self.send_json({"ok": False, "error": "Internal server error"}, HTTPStatus.INTERNAL_SERVER_ERROR)
         elif effective_path == "/api/test_node":
             try:
                 payload = self.read_json_body()
@@ -6637,7 +6640,7 @@ class Handler(BaseHTTPRequestHandler):
                     set_state(is_connecting=False)
                     maintenance_lock.release()
             except Exception as exc:
-                self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+                self.send_json({"ok": False, "error": "Internal server error"}, HTTPStatus.INTERNAL_SERVER_ERROR)
         elif effective_path == "/api/test_proxy":
             try:
                 self.read_request_body()
@@ -6658,7 +6661,7 @@ class Handler(BaseHTTPRequestHandler):
                     )
                 self.send_json(result)
             except Exception as exc:
-                self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+                self.send_json({"ok": False, "error": "Internal server error"}, HTTPStatus.INTERNAL_SERVER_ERROR)
         else:
             self.send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
 
