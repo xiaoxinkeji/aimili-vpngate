@@ -126,8 +126,10 @@ BATCH_FLUSH_SIZE = env_int("BATCH_FLUSH_SIZE", 10, 1, 100)
 GRACE_CYCLES = env_int("GRACE_CYCLES", 1, 0, 5)
 MAX_TEST_WORKERS = env_int("MAX_TEST_WORKERS", 8, 1, 20)
 AUTO_EXPIRE_HOURS = env_int("AUTO_EXPIRE_HOURS", 48, 6, 720)
+API_RATE_LIMIT_PER_MINUTE = env_int("API_RATE_LIMIT_PER_MINUTE", 60, 5, 600)
 
 _api_circuit_open_until = 0.0
+_START_TIME = time.time()
 MANUAL_TEST_NODE_LIMIT = env_int("MANUAL_TEST_NODE_LIMIT", 5, 1, 20)
 INITIAL_CONNECT_TEST_LIMIT = env_int("INITIAL_CONNECT_TEST_LIMIT", 10, 1, 50)
 OPENVPN_CMD = os.environ.get("OPENVPN_CMD", "openvpn")
@@ -5731,6 +5733,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header("Content-Type", content_type)
                 self.send_header("Content-Encoding", "gzip")
                 self.send_header("Content-Length", str(len(compressed)))
+                self.send_header("Access-Control-Allow-Origin", "*")
                 self.send_header("Cache-Control", "no-store")
                 self.end_headers()
                 self.wfile.write(compressed)
@@ -5738,6 +5741,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
+        self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)
@@ -5765,6 +5769,43 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         effective_path = self.validate_path()
         if effective_path == "": return
+
+        # CORS preflight
+        if self.command == "OPTIONS":
+            self.send_response(HTTPStatus.NO_CONTENT)
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+            self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization, Accept-Encoding")
+            self.send_header("Access-Control-Max-Age", "86400")
+            self.end_headers()
+            return
+
+        # Rate limiting
+        if API_RATE_LIMIT_PER_MINUTE > 0:
+            client_ip = self.client_address[0]
+            now_ts = time.time()
+            with lock:
+                if not hasattr(Handler, '_rate_limit_map'):
+                    Handler._rate_limit_map = {}
+                window = now_ts - 60
+                timestamps = Handler._rate_limit_map.get(client_ip, [])
+                timestamps = [t for t in timestamps if t > window]
+                if len(timestamps) >= API_RATE_LIMIT_PER_MINUTE:
+                    self.send_response(HTTPStatus.TOO_MANY_REQUESTS)
+                    self.send_header("Retry-After", "60")
+                    self.end_headers()
+                    return
+                timestamps.append(now_ts)
+                Handler._rate_limit_map[client_ip] = timestamps
+
+        # Health check (no auth required)
+        if effective_path == "/health":
+            self.send_json({"status": "ok", "uptime": round(time.time() - _START_TIME, 1)})
+            return
+        if effective_path == "/ready":
+            nodes_loaded = len(read_nodes()) > 0
+            self.send_json({"status": "ready" if nodes_loaded else "starting", "nodes": len(read_nodes())})
+            return
 
         if effective_path == "/favicon.ico":
             self.send_response(HTTPStatus.NO_CONTENT)
@@ -5973,6 +6014,14 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"logs": entries})
         else:
             self.send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
+
+    def do_OPTIONS(self) -> None:
+        self.send_response(HTTPStatus.NO_CONTENT)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization, Accept-Encoding")
+        self.send_header("Access-Control-Max-Age", "86400")
+        self.end_headers()
 
     def do_POST(self) -> None:
         global is_connecting
@@ -6440,6 +6489,7 @@ def main() -> None:
             "grace_cycles": GRACE_CYCLES,
             "max_test_workers": MAX_TEST_WORKERS,
             "auto_expire_hours": AUTO_EXPIRE_HOURS,
+            "api_rate_limit_per_minute": API_RATE_LIMIT_PER_MINUTE,
             "cert_templates_count": len(_discover_cert_templates()),
             "local_proxy": f"http://{'[' + LOCAL_PROXY_HOST + ']' if ':' in LOCAL_PROXY_HOST else LOCAL_PROXY_HOST}:{LOCAL_PROXY_PORT}",
             "active_openvpn_node_id": "",
