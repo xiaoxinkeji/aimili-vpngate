@@ -171,6 +171,7 @@ BLACKLIST_FILE = DATA_DIR / "blacklist.json"
 lock = threading.RLock()
 maintenance_lock = threading.Lock()
 _recovery_thread_running = False
+_recovery_thread_lock = threading.Lock()
 active_sessions: dict[str, float] = {}
 active_openvpn_process: subprocess.Popen[str] | None = None
 active_openvpn_node_id = ""
@@ -1029,7 +1030,7 @@ def _discover_cert_templates() -> list[str]:
     _CERT_TEMPLATES_CACHE = result
     # Persist to disk
     try:
-        tpl_path = NODES_DIR / _CERT_TEMPLATES_FILE
+        tpl_path = DATA_DIR / _CERT_TEMPLATES_FILE
         write_json(str(tpl_path), {"count": len(result), "updated_at": time.time()})
     except Exception:
         pass
@@ -6280,7 +6281,7 @@ class Handler(BaseHTTPRequestHandler):
                 expected_pwd = ui_cfg.get("password", "")
                 expected_uname = ui_cfg.get("username", "admin")
                 
-                if expected_pwd and input_pwd == expected_pwd and input_uname == expected_uname:
+                if expected_pwd and secrets.compare_digest(input_pwd, expected_pwd) and secrets.compare_digest(input_uname, expected_uname):
                     token = uuid.uuid4().hex
                     with lock:
                         active_sessions[token] = time.time() + 30 * 24 * 3600
@@ -6962,7 +6963,7 @@ def main() -> None:
     finally:
         print("[AimiliVPN] 正在保存状态并清理资源...", flush=True)
         try:
-            state = read_json(STATE_FILE) if STATE_FILE.exists() else {}
+            state = read_json(STATE_FILE, {})
             state["shutdown_at"] = time.time()
             state["shutdown_reason"] = "graceful"
             write_json(STATE_FILE, state)
