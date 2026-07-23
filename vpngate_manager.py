@@ -100,6 +100,21 @@ def env_int(name: str, default: int, min_value: int | None = None, max_value: in
         return default
     return value
 
+def env_float(name: str, default: float, min_value: float | None = None, max_value: float | None = None) -> float:
+    raw = os.environ.get(name)
+    try:
+        value = float(raw) if raw not in (None, "") else default
+    except (TypeError, ValueError):
+        print(f"[配置警告] 环境变量 {name}={raw!r} 不是有效浮点数，使用默认值 {default}", flush=True)
+        value = default
+    if min_value is not None and value < min_value:
+        print(f"[配置警告] 环境变量 {name}={value} 小于允许值 {min_value}，使用默认值 {default}", flush=True)
+        return default
+    if max_value is not None and value > max_value:
+        print(f"[配置警告] 环境变量 {name}={value} 大于允许值 {max_value}，使用默认值 {default}", flush=True)
+        return default
+    return value
+
 def bounded_int(value: Any, default: int, min_value: int | None = None, max_value: int | None = None) -> int:
     try:
         parsed = int(value)
@@ -128,6 +143,8 @@ MAX_TEST_WORKERS = env_int("MAX_TEST_WORKERS", 8, 1, 20)
 AUTO_EXPIRE_HOURS = env_int("AUTO_EXPIRE_HOURS", 48, 6, 720)
 API_RATE_LIMIT_PER_MINUTE = env_int("API_RATE_LIMIT_PER_MINUTE", 60, 5, 600)
 LOG_MAX_SIZE_MB = env_int("LOG_MAX_SIZE_MB", 50, 5, 500)
+WORKER_CPU_LOAD_LIMIT = env_float("WORKER_CPU_LOAD_LIMIT", 0.7, 0.1, 2.0)
+WORKER_MEM_LIMIT_MB = env_int("WORKER_MEM_LIMIT_MB", 500, 100, 4096)
 
 _api_circuit_open_until = 0.0
 _START_TIME = time.time()
@@ -1867,14 +1884,32 @@ def test_multiple_nodes(node_ids: list[str]) -> list[dict[str, Any]]:
 
     updated_nodes_map = {}
     max_workers = min(MAX_TEST_WORKERS, max(1, len(to_test) // 50 + 1))
+    # Scale down under CPU load
+    try:
+        with open("/proc/loadavg") as f:
+            load_1m = float(f.read().split()[0])
+        cpu_count = os.cpu_count() or 1
+        load_ratio = load_1m / cpu_count
+        if load_ratio > WORKER_CPU_LOAD_LIMIT:
+            scaled = max(1, int(max_workers * WORKER_CPU_LOAD_LIMIT / load_ratio))
+            if scaled < max_workers:
+                print(f"[Worker] CPU 负载 {load_ratio:.1f} 超过阈值 {WORKER_CPU_LOAD_LIMIT}，Worker {max_workers}→{scaled}", flush=True)
+                max_workers = scaled
+    except Exception:
+        pass
     # Scale down under memory pressure
     try:
         import resource
         mem_mb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
-        if mem_mb > 500:
-            max_workers = min(max_workers, 3)
-        elif mem_mb > 300:
-            max_workers = min(max_workers, 5)
+        if mem_mb > WORKER_MEM_LIMIT_MB:
+            scaled = max(1, int(max_workers * 0.5))
+            print(f"[Worker] 内存 {mem_mb:.0f}MB 超过阈值 {WORKER_MEM_LIMIT_MB}MB，Worker {max_workers}→{scaled}", flush=True)
+            max_workers = scaled
+        elif mem_mb > WORKER_MEM_LIMIT_MB * 0.6:
+            scaled = max(1, int(max_workers * 0.75))
+            if scaled < max_workers:
+                print(f"[Worker] 内存 {mem_mb:.0f}MB 接近阈值，Worker {max_workers}→{scaled}", flush=True)
+                max_workers = scaled
     except Exception:
         pass
     abort_threshold = min(PROGRESSIVE_ABORT_THRESHOLD, len(to_test) - 1)
@@ -6649,6 +6684,8 @@ def main() -> None:
             "auto_expire_hours": AUTO_EXPIRE_HOURS,
             "api_rate_limit_per_minute": API_RATE_LIMIT_PER_MINUTE,
             "log_max_size_mb": LOG_MAX_SIZE_MB,
+            "worker_cpu_load_limit": WORKER_CPU_LOAD_LIMIT,
+            "worker_mem_limit_mb": WORKER_MEM_LIMIT_MB,
             "cert_templates_count": len(_discover_cert_templates()),
             "local_proxy": f"http://{'[' + LOCAL_PROXY_HOST + ']' if ':' in LOCAL_PROXY_HOST else LOCAL_PROXY_HOST}:{LOCAL_PROXY_PORT}",
             "active_openvpn_node_id": "",
