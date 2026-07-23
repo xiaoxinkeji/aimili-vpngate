@@ -377,23 +377,47 @@ def cleanup_old_logs(logs_dir: Path) -> None:
         print(f"[清理错误] 清理旧日志失败: {e}", flush=True)
 
 def log_to_json(level: str, module: str, message: str) -> None:
+    global _log_file_cache
     try:
         logs_dir = DATA_DIR / "logs"
         logs_dir.mkdir(exist_ok=True, parents=True)
         date_str = time.strftime("%Y-%m-%d", time.localtime())
-        log_file = logs_dir / f"{date_str}.json"
+        log_file_path = logs_dir / f"{date_str}.json"
         entry = {
             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
             "level": level,
             "module": module,
             "message": message
         }
+        line = json.dumps(entry, ensure_ascii=False) + "\n"
+        fh = _log_file_cache.get(date_str) if hasattr(log_to_json, '_cache_initialized') else None
+        if fh is None or fh.name != str(log_file_path):
+            if not hasattr(log_to_json, '_cache_initialized'):
+                _log_file_cache = {}
+                log_to_json._cache_initialized = True
+            if fh is not None:
+                try:
+                    fh.close()
+                except Exception:
+                    pass
+            fh = open(log_file_path, "a", encoding="utf-8")
+            _log_file_cache = {date_str: fh}
+            # Purge old entries
+            for k in list(_log_file_cache.keys()):
+                if k != date_str and _log_file_cache[k] is not None:
+                    try:
+                        _log_file_cache[k].close()
+                    except Exception:
+                        pass
+                    del _log_file_cache[k]
         with lock:
-            with open(log_file, "a", encoding="utf-8") as f:
-                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+            fh.write(line)
+            fh.flush()
         cleanup_old_logs(logs_dir)
     except Exception as e:
         print(f"[Log Error] Failed to write JSON log: {e}", flush=True)
+
+_log_file_cache: dict[str, Any] = {}
 
 def emit(level: str, module: str, message: str) -> None:
     """统一日志: 同时输出到 stdout 和结构化 JSON 日志文件"""
@@ -1059,6 +1083,35 @@ def _download_node_config(config_url: str, retry: int = 3, timeout: int = 10,
         return text
 
     if not config_url or not config_url.strip():
+        return ""
+
+    # SSRF guard: reject internal/private IP targets
+    def _is_safe_url(url: str) -> bool:
+        parsed = urllib.parse.urlparse(url)
+        if parsed.scheme not in ("http", "https"):
+            return False
+        host = parsed.hostname
+        if not host:
+            return False
+        try:
+            ip = socket.getaddrinfo(host, None)[0][4][0]
+        except Exception:
+            return False
+        if ip.startswith("127.") or ip.startswith("10.") or ip.startswith("192.168.") or ip.startswith("172."):
+            # Additional check for 172.16-31 private range
+            parts = ip.split(".")
+            if parts[0] == "172" and 16 <= int(parts[1]) <= 31:
+                return False
+            if parts[0] in ("127", "10"):
+                return False
+            if parts[0] == "192" and parts[1] == "168":
+                return False
+        if ip == "0.0.0.0" or ip.startswith("169.254."):
+            return False
+        return True
+
+    if not _is_safe_url(config_url):
+        print(f"[config] 拒绝不安全 URL: {config_url}", flush=True)
         return ""
 
     last_err = None
@@ -1887,34 +1940,32 @@ def test_multiple_nodes(node_ids: list[str]) -> list[dict[str, Any]]:
 
     updated_nodes_map = {}
     max_workers = min(MAX_TEST_WORKERS, max(1, len(to_test) // 50 + 1))
-    # Scale down under CPU load
+    # Adaptive scaling: compute all limits independently, take min
+    cpu_limit = max_workers
+    mem_limit = max_workers
     try:
         with open("/proc/loadavg") as f:
             load_1m = float(f.read().split()[0])
         cpu_count = os.cpu_count() or 1
         load_ratio = load_1m / cpu_count
         if load_ratio > WORKER_CPU_LOAD_LIMIT:
-            scaled = max(1, int(max_workers * WORKER_CPU_LOAD_LIMIT / load_ratio))
-            if scaled < max_workers:
-                print(f"[Worker] CPU 负载 {load_ratio:.1f} 超过阈值 {WORKER_CPU_LOAD_LIMIT}，Worker {max_workers}→{scaled}", flush=True)
-                max_workers = scaled
+            cpu_limit = max(1, int(max_workers * WORKER_CPU_LOAD_LIMIT / load_ratio))
+            if cpu_limit < max_workers:
+                print(f"[Worker] CPU 负载 {load_ratio:.1f} 超过阈值 {WORKER_CPU_LOAD_LIMIT}，上限 {cpu_limit}", flush=True)
     except Exception:
         pass
-    # Scale down under memory pressure
     try:
         import resource
         mem_mb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
         if mem_mb > WORKER_MEM_LIMIT_MB:
-            scaled = max(1, int(max_workers * 0.5))
-            print(f"[Worker] 内存 {mem_mb:.0f}MB 超过阈值 {WORKER_MEM_LIMIT_MB}MB，Worker {max_workers}→{scaled}", flush=True)
-            max_workers = scaled
+            mem_limit = max(1, max_workers // 2)
         elif mem_mb > WORKER_MEM_LIMIT_MB * 0.6:
-            scaled = max(1, int(max_workers * 0.75))
-            if scaled < max_workers:
-                print(f"[Worker] 内存 {mem_mb:.0f}MB 接近阈值，Worker {max_workers}→{scaled}", flush=True)
-                max_workers = scaled
+            mem_limit = max(1, int(max_workers * 0.75))
+        if mem_limit < max_workers:
+            print(f"[Worker] 内存 {mem_mb:.0f}MB, 上限 {mem_limit}", flush=True)
     except Exception:
         pass
+    max_workers = min(cpu_limit, mem_limit)
     abort_threshold = min(PROGRESSIVE_ABORT_THRESHOLD, len(to_test) - 1)
     completed_count = 0
     unavailable_count = 0
@@ -5789,9 +5840,10 @@ class Handler(BaseHTTPRequestHandler):
         return False
 
     def is_xmili_token_valid(self) -> bool:
+        import secrets
         auth_header = self.headers.get("Authorization", "")
         if auth_header.startswith("Bearer "):
-            return auth_header[7:] == X_MILI_TOKEN
+            return secrets.compare_digest(auth_header[7:], X_MILI_TOKEN)
         return False
 
     def validate_path(self) -> str:
@@ -5943,6 +5995,35 @@ class Handler(BaseHTTPRequestHandler):
             raise ValueError("请求 JSON 必须是对象")
         return data
 
+    def _check_rate_limit(self) -> bool:
+        """返回 True 表示被限流（已发送 429），False 表示放行"""
+        if API_RATE_LIMIT_PER_MINUTE <= 0:
+            return False
+        client_ip = self.client_address[0]
+        now_ts = time.time()
+        window = now_ts - 60
+        # Periodic cleanup: every 10 min, purge empty entries
+        _last_cleanup = getattr(Handler, '_rate_limit_cleanup_at', 0.0)
+        if now_ts - _last_cleanup > 600:
+            with lock:
+                Handler._rate_limit_cleanup_at = now_ts
+                purged = [k for k, v in Handler._rate_limit_map.items() if not v]
+                for k in purged:
+                    del Handler._rate_limit_map[k]
+        with lock:
+            if not hasattr(Handler, '_rate_limit_map'):
+                Handler._rate_limit_map = {}
+            timestamps = Handler._rate_limit_map.get(client_ip, [])
+            timestamps = [t for t in timestamps if t > window]
+            if len(timestamps) >= API_RATE_LIMIT_PER_MINUTE:
+                self.send_response(HTTPStatus.TOO_MANY_REQUESTS)
+                self.send_header("Retry-After", "60")
+                self.end_headers()
+                return True
+            timestamps.append(now_ts)
+            Handler._rate_limit_map[client_ip] = timestamps
+        return False
+
     def do_GET(self) -> None:
         effective_path = self.validate_path()
         if effective_path == "": return
@@ -5952,33 +6033,8 @@ class Handler(BaseHTTPRequestHandler):
             self._handle_websocket_upgrade()
             return
 
-        # CORS preflight
-        if self.command == "OPTIONS":
-            self.send_response(HTTPStatus.NO_CONTENT)
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-            self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization, Accept-Encoding")
-            self.send_header("Access-Control-Max-Age", "86400")
-            self.end_headers()
+        if self._check_rate_limit():
             return
-
-        # Rate limiting
-        if API_RATE_LIMIT_PER_MINUTE > 0:
-            client_ip = self.client_address[0]
-            now_ts = time.time()
-            with lock:
-                if not hasattr(Handler, '_rate_limit_map'):
-                    Handler._rate_limit_map = {}
-                window = now_ts - 60
-                timestamps = Handler._rate_limit_map.get(client_ip, [])
-                timestamps = [t for t in timestamps if t > window]
-                if len(timestamps) >= API_RATE_LIMIT_PER_MINUTE:
-                    self.send_response(HTTPStatus.TOO_MANY_REQUESTS)
-                    self.send_header("Retry-After", "60")
-                    self.end_headers()
-                    return
-                timestamps.append(now_ts)
-                Handler._rate_limit_map[client_ip] = timestamps
 
         # Health check (no auth required)
         if effective_path == "/health":
@@ -6209,6 +6265,8 @@ class Handler(BaseHTTPRequestHandler):
         global is_connecting
         effective_path = self.validate_path()
         if effective_path == "": return
+        if self._check_rate_limit():
+            return
         
         if effective_path == "/api/login":
             try:
