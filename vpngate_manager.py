@@ -395,6 +395,11 @@ def log_to_json(level: str, module: str, message: str) -> None:
     except Exception as e:
         print(f"[Log Error] Failed to write JSON log: {e}", flush=True)
 
+def emit(level: str, module: str, message: str) -> None:
+    """统一日志: 同时输出到 stdout 和结构化 JSON 日志文件"""
+    print(f"[{module}] [{level}] {message}", flush=True)
+    log_to_json(level, module, message)
+
 def set_state(**updates: Any) -> None:
     global is_connecting
     with lock:
@@ -812,8 +817,7 @@ def fetch_candidates() -> list[dict[str, Any]]:
     if API_CIRCUIT_BREAKER_SECONDS > 0 and _api_circuit_open_until > time.time():
         remaining = int(_api_circuit_open_until - time.time())
         msg = f"断路器开启，跳过 vpngate API 拉取 (剩余 {remaining}s)"
-        print(f"[fetch_candidates] {msg}", flush=True)
-        log_to_json("INFO", "Main", msg)
+        emit("WARN", "Fetcher", msg)
         set_state(last_fetch_status="circuit_open", last_fetch_message=msg)
         return []
     
@@ -839,9 +843,8 @@ def fetch_candidates() -> list[dict[str, Any]]:
                 delay = min(2 ** i - 1, 30)
                 time.sleep(delay)
             try:
-                msg = f"尝试拉取 {url} (SSL验证: {verify_ssl}, 第 {i+1} 次尝试)..."
-                print(f"[fetch_candidates] {msg}", flush=True)
-                log_to_json("INFO", "Main", msg)
+                msg = f"尝试拉取 {url} (SSL验证: {verify_ssl}, 第 {i+1} 次)..."
+                emit("INFO", "Fetcher", msg)
                 api_text = fetch_api_text(url, verify_ssl)
                 rows = parse_vpngate_rows(api_text)
                 for row in rows[:MAX_SCAN_ROWS]:
@@ -867,16 +870,14 @@ def fetch_candidates() -> list[dict[str, Any]]:
                     break
             except Exception as e:
                 last_err = e
-                print(f"[fetch_candidates] 拉取失败 (URL: {url}, 验证: {verify_ssl}): {e}", flush=True)
-                log_to_json("WARNING", "Main", f"拉取失败 (URL: {url}, 验证: {verify_ssl}): {e}")
+                emit("WARN", "Fetcher", f"拉取失败 (URL: {url}, 验证: {verify_ssl}): {e}")
         if candidates:
             break
             
     if not candidates:
         err_code, diag_msg = vpn_utils.diagnose_api_failure(API_URL)
         full_err_msg = f"获取官方 API 节点最终失败: {last_err} | 诊断结果: {diag_msg}"
-        print(f"[错误代码 {err_code}] {full_err_msg}", flush=True)
-        log_to_json("ERROR", "Main", f"[错误代码 {err_code}] {full_err_msg}")
+        emit("ERROR", "Fetcher", f"[错误代码 {err_code}] {full_err_msg}")
         set_state(
             last_fetch_status="error",
             last_fetch_error_code=err_code,
@@ -887,7 +888,7 @@ def fetch_candidates() -> list[dict[str, Any]]:
         set_state(api_fetch_failure_total=_fail)
         if API_CIRCUIT_BREAKER_SECONDS > 0:
             _api_circuit_open_until = time.time() + API_CIRCUIT_BREAKER_SECONDS
-            print(f"[fetch_candidates] 断路器已开启，下次拉取将在 {API_CIRCUIT_BREAKER_SECONDS}s 后", flush=True)
+            emit("WARN", "Fetcher", f"断路器已开启，下次拉取将在 {API_CIRCUIT_BREAKER_SECONDS}s 后")
         if last_err:
             raise RuntimeError(diag_msg) from last_err
         else:
@@ -2062,21 +2063,18 @@ def auto_switch_node(attempt: int = 0) -> None:
     if candidates:
         next_node = candidates[0]
         msg = f"当前连接已失效或代理连通性检测失败，正在自动切换至最佳备用节点: {next_node['id']}"
-        print(f"[自动切换] {msg}", flush=True)
-        log_to_json("INFO", "VPN", msg)
+        emit("INFO", "VPN", msg)
         try:
             connect_node(next_node["id"])
         except Exception as e:
             err_msg = f"切换到备用节点 {next_node['id']} 失败: {e}，将尝试下一个..."
-            print(f"[自动切换] {err_msg}", flush=True)
-            log_to_json("WARNING", "VPN", err_msg)
+            emit("WARN", "VPN", err_msg)
             auto_switch_node(attempt + 1)
     else:
         msg = "没有可用的备选节点，将自动断开并清理当前连接状态，同时在后台异步获取新节点..."
         if routing_mode == "fixed_region" and target_country:
             msg = f"没有可用的【{target_country}】备选节点，已断开连接，将在后台持续尝试获取新节点..."
-        print(f"[自动切换] {msg}", flush=True)
-        log_to_json("WARNING", "VPN", msg)
+        emit("WARN", "VPN", msg)
         stop_active_openvpn()
         with lock:
             nodes = read_nodes()
@@ -2248,12 +2246,7 @@ def _expire_stale_nodes() -> int:
                 keep.append(n)
         if expired:
             write_json(NODES_FILE, sort_all_nodes(keep))
-            print(f"[节点清理] 移除 {expired} 个过期节点 (不可用超过 {AUTO_EXPIRE_HOURS}h, 剩余 {len(keep)})", flush=True)
-            log_to_json("INFO", "Main", f"移除 {expired} 个过期节点 (不可用超过 {AUTO_EXPIRE_HOURS}h)")
-            try:
-                WebSocketBroadcaster.broadcast({"type": "nodes_expired", "count": expired})
-            except Exception:
-                pass
+            emit("INFO", "Maintenance", f"移除 {expired} 个过期节点 (不可用超过 {AUTO_EXPIRE_HOURS}h, 剩余 {len(keep)})")
         return expired
 
 
@@ -2292,7 +2285,7 @@ def maintain_valid_nodes(force: bool = False) -> str:
                             has_active_id = True
                             stop_active_openvpn()
                     if has_active_id:
-                        print("[维护线程] 检测到当前 OpenVPN 进程已意外退出，准备自动切换节点", flush=True)
+                        emit("WARN", "Maintenance", "OpenVPN 进程意外退出，触发自动切换节点")
                         with lock:
                             is_connecting = False
                         auto_switch_node()
@@ -2589,16 +2582,13 @@ def collector_loop() -> None:
         last_collector_heartbeat = time.time()
         success = False
         try:
-            print("[守护线程] 开始执行节点拉取与可用性检测周期任务...", flush=True)
-            log_to_json("INFO", "Main", "开始执行节点拉取与可用性检测周期任务...")
+            emit("INFO", "Collector", "开始执行节点拉取与可用性检测周期任务")
             res = maintain_valid_nodes(force=False)
             if "没有拉取到新节点" not in res:
                 success = True
-            log_to_json("INFO", "Main", f"周期同步与检测任务完成，结果: {res}")
+            emit("INFO", "Collector", f"周期同步与检测任务完成: {res}")
         except Exception as exc:
-            err_msg = f"周期节点同步任务执行异常: {exc}"
-            print(f"[错误] {err_msg}", flush=True)
-            log_to_json("ERROR", "Main", err_msg)
+            emit("ERROR", "Collector", f"周期节点同步任务执行异常: {exc}")
             set_state(last_check_at=time.time(), last_check_message=f"check error: {exc}")
             
         if not active_openvpn_running() and not success:
@@ -2608,7 +2598,7 @@ def collector_loop() -> None:
                 available_count = sum(1 for n in read_nodes() if n.get("probe_status") == "available")
             if available_count < TARGET_VALID_NODES:
                 sleep_time = WARMUP_CHECK_INTERVAL_SECONDS
-                print(f"[预热模式] 可用节点不足 ({available_count}/{TARGET_VALID_NODES})，快速周期 {sleep_time}s", flush=True)
+                emit("INFO", "Collector", f"预热模式: 可用节点不足 ({available_count}/{TARGET_VALID_NODES})，快速周期 {sleep_time}s")
             else:
                 sleep_time = CHECK_INTERVAL_SECONDS
             
