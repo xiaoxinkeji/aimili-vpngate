@@ -127,6 +127,7 @@ GRACE_CYCLES = env_int("GRACE_CYCLES", 1, 0, 5)
 MAX_TEST_WORKERS = env_int("MAX_TEST_WORKERS", 8, 1, 20)
 AUTO_EXPIRE_HOURS = env_int("AUTO_EXPIRE_HOURS", 48, 6, 720)
 API_RATE_LIMIT_PER_MINUTE = env_int("API_RATE_LIMIT_PER_MINUTE", 60, 5, 600)
+LOG_MAX_SIZE_MB = env_int("LOG_MAX_SIZE_MB", 50, 5, 500)
 
 _api_circuit_open_until = 0.0
 _START_TIME = time.time()
@@ -6424,14 +6425,36 @@ class Handler(BaseHTTPRequestHandler):
 
 class Tee:
     def __init__(self, file_path: str):
+        self._path = file_path
         Path(file_path).parent.mkdir(exist_ok=True, parents=True)
         self.file = open(file_path, "a", encoding="utf-8")
         self.stdout = sys.stdout
+        self._last_rotate_check = time.time()
+
+    def _maybe_rotate(self) -> None:
+        if LOG_MAX_SIZE_MB <= 0:
+            return
+        if time.time() - self._last_rotate_check < 60:
+            return
+        self._last_rotate_check = time.time()
+        try:
+            size_mb = Path(self._path).stat().st_size / (1024 * 1024)
+            if size_mb > LOG_MAX_SIZE_MB:
+                backup = f"{self._path}.1"
+                if Path(backup).exists():
+                    Path(backup).unlink()
+                self.file.close()
+                Path(self._path).rename(backup)
+                self.file = open(self._path, "a", encoding="utf-8")
+                print(f"[日志轮转] 日志文件已达到 {LOG_MAX_SIZE_MB}MB，已轮转备份为 {backup}", flush=True)
+        except Exception:
+            pass
 
     def write(self, data: str) -> None:
         self.stdout.write(data)
         self.file.write(data)
         self.file.flush()
+        self._maybe_rotate()
 
     def flush(self) -> None:
         self.stdout.flush()
@@ -6490,6 +6513,7 @@ def main() -> None:
             "max_test_workers": MAX_TEST_WORKERS,
             "auto_expire_hours": AUTO_EXPIRE_HOURS,
             "api_rate_limit_per_minute": API_RATE_LIMIT_PER_MINUTE,
+            "log_max_size_mb": LOG_MAX_SIZE_MB,
             "cert_templates_count": len(_discover_cert_templates()),
             "local_proxy": f"http://{'[' + LOCAL_PROXY_HOST + ']' if ':' in LOCAL_PROXY_HOST else LOCAL_PROXY_HOST}:{LOCAL_PROXY_PORT}",
             "active_openvpn_node_id": "",
