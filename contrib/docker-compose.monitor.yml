@@ -1,11 +1,30 @@
-# AimiliVPN 监控栈 (Prometheus + Grafana)
+# AimiliVPN 监控栈 (Prometheus + Grafana + Metrics Exporter)
 # 使用方式:
 #   cd /path/to/aimili-vpngate
 #   docker compose -f docker-compose.yml -f contrib/docker-compose.monitor.yml up -d
 # Grafana: http://localhost:3000 (admin/admin)
 # Dashboard 已预配置，数据源自动对接
+#
+# Metrics Exporter 是一个独立 sidecar，读取 state.json/nodes.json
+# 生成 Prometheus 格式指标 (30+ 指标: cycle/worker/api/grace_nodes)
+# 默认绑定 :9798 端口
 
 services:
+  metrics-exporter:
+    image: ghcr.io/xiaoxinkeji/aimili-vpngate:latest
+    container_name: aimilivpn-metrics
+    restart: unless-stopped
+    network_mode: host
+    entrypoint: ["python3", "metrics_exporter.py"]
+    volumes:
+      - ./vpngate_data:/opt/aimilivpn/vpngate_data:ro
+    environment:
+      - VPNGATE_DATA_DIR=/opt/aimilivpn/vpngate_data
+      - METRICS_PORT=9798
+      - METRICS_REFRESH_INTERVAL=15
+    cpus: "0.25"
+    mem_limit: 64m
+
   prometheus:
     image: prom/prometheus:latest
     container_name: aimilivpn-prometheus

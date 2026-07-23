@@ -36,6 +36,26 @@ services:
       - METRICS_ENABLED=true
       - METRICS_PORT=9798
       - METRICS_REFRESH_INTERVAL=15
+      # ─── 检测效率优化 (v1.4.x) ───
+      # - RETEST_COOLDOWN_SECONDS=900        # 不可用节点冷却期 (默认 15min)
+      # - API_CIRCUIT_BREAKER_SECONDS=600    # vpngate API 断路器 (默认 10min)
+      # - WARMUP_CHECK_INTERVAL_SECONDS=60   # 可用节点不足时加速检测周期
+      # - FETCH_INTERVAL_SECONDS=1260
+      # - MAX_SCAN_ROWS=300
+      # ─── 弹性容错 (v1.5.x) ───
+      # - PROGRESSIVE_ABORT_THRESHOLD=50     # 首批 N 全失败时跳过剩余
+      # - SATURATION_MULTIPLIER=2            # 可用节点 ≥ 目标 N 倍时跳过本轮
+      # - BATCH_FLUSH_SIZE=10               # 每 N 个结果批量刷盘
+      # - GRACE_CYCLES=1                     # 可用→不可用节点保留 N 周期
+      # ─── Worker + 清理 (v1.6.x) ───
+      # - MAX_TEST_WORKERS=8                 # 最大并行测试 Worker 数
+      # - AUTO_EXPIRE_HOURS=48               # 持续不可用超时自动移除
+      # ─── API 高可用 (v1.7.x-v1.8.x) ───
+      # - API_RATE_LIMIT_PER_MINUTE=60       # 单 IP 每分钟最大请求数
+      # - LOG_MAX_SIZE_MB=50                # 日志文件轮转阈值
+      # ─── Worker 自适应扩缩 (v1.9.x) ───
+      # - WORKER_CPU_LOAD_LIMIT=0.7         # CPU loadavg 阈值 (归一化)
+      # - WORKER_MEM_LIMIT_MB=500            # 内存阈值 (超时减半 Worker)
       # ─── 上游代理 ───
       # - http_proxy=http://proxy_ip:port
       # - OPENVPN_UPSTREAM_SOCKS=socks5://proxy_ip:port
@@ -44,8 +64,6 @@ services:
       # - LOCAL_PROXY_PASS=mypass
       # ─── 性能调优 ───
       # - LOCAL_PROXY_MAX_CONNECTIONS=256
-      # - FETCH_INTERVAL_SECONDS=1260
-      # - MAX_SCAN_ROWS=300
     volumes:
       - ./vpngate_data:/opt/aimilivpn/vpngate_data
     tmpfs:
@@ -80,7 +98,7 @@ services:
       test:
         [
           "CMD-SHELL",
-          "pgrep -f vpngate_manager.py > /dev/null && curl -sf --max-time 5 \"http://localhost:$${UI_PORT:-8787}/\" > /dev/null || exit 1",
+          "pgrep -f vpngate_manager.py > /dev/null && curl -sf --max-time 5 \"http://localhost:$${UI_PORT:-8787}/health\" > /dev/null || exit 1",
         ]
       interval: 30s
       timeout: 10s
