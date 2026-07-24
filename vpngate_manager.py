@@ -146,6 +146,10 @@ LOG_MAX_SIZE_MB = env_int("LOG_MAX_SIZE_MB", 50, 5, 500)
 WORKER_CPU_LOAD_LIMIT = env_float("WORKER_CPU_LOAD_LIMIT", 0.7, 0.1, 2.0)
 WORKER_MEM_LIMIT_MB = env_int("WORKER_MEM_LIMIT_MB", 500, 100, 4096)
 
+_LOG_LEVEL_ORDER = {"DEBUG": 0, "INFO": 1, "WARN": 2, "ERROR": 3}
+LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").strip().upper()
+LOG_LEVEL_NUM = _LOG_LEVEL_ORDER.get(LOG_LEVEL, 1)
+
 _api_circuit_open_until = 0.0
 _START_TIME = time.time()
 MANUAL_TEST_NODE_LIMIT = env_int("MANUAL_TEST_NODE_LIMIT", 5, 1, 20)
@@ -268,6 +272,9 @@ def generate_random_username() -> str:
             has_digit = any(c.isdigit() for c in uname)
             if has_lower and has_upper and has_digit:
                 return uname
+
+def validate_required_fields(payload: dict[str, Any], *fields: str) -> list[str]:
+    return [f for f in fields if not str(payload.get(f, "")).strip()]
 
 def load_ui_config() -> dict[str, Any]:
     with lock:
@@ -417,7 +424,8 @@ def log_to_json(level: str, module: str, message: str) -> None:
 _log_file_cache: dict[str, Any] = {}
 
 def emit(level: str, module: str, message: str) -> None:
-    """统一日志: 同时输出到 stdout 和结构化 JSON 日志文件"""
+    if _LOG_LEVEL_ORDER.get(level.upper(), 1) < LOG_LEVEL_NUM:
+        return
     print(f"[{module}] [{level}] {message}", flush=True)
     log_to_json(level, module, message)
 
@@ -6009,6 +6017,13 @@ class Handler(BaseHTTPRequestHandler):
     def send_error_json(self, error: str, code: str, status: HTTPStatus = HTTPStatus.BAD_REQUEST) -> None:
         self.send_json({"error": error, "code": code}, status)
 
+    def _handle_post_error(self, e: Exception, endpoint: str) -> None:
+        if isinstance(e, ValueError):
+            self.send_json({"ok": False, "error": str(e)}, HTTPStatus.BAD_REQUEST)
+        else:
+            emit("ERROR", "API", f"POST {endpoint} failed: {e}")
+            self.send_json({"ok": False, "error": "服务器内部错误"}, HTTPStatus.INTERNAL_SERVER_ERROR)
+
     def read_request_body(self, max_bytes: int = 65536) -> bytes:
         length = parse_int(self.headers.get("Content-Length"))
         if length < 0:
@@ -6024,7 +6039,10 @@ class Handler(BaseHTTPRequestHandler):
         body = self.read_request_body(max_bytes)
         if not body:
             return {}
-        data = json.loads(body.decode("utf-8"))
+        try:
+            data = json.loads(body.decode("utf-8"))
+        except json.JSONDecodeError as e:
+            raise ValueError(f"请求 JSON 解析失败: {e}")
         if not isinstance(data, dict):
             raise ValueError("请求 JSON 必须是对象")
         return data
@@ -6325,9 +6343,8 @@ class Handler(BaseHTTPRequestHandler):
                     })
                 else:
                     self.send_json({"ok": False, "error": "用户名或密码不正确，请重新输入"}, HTTPStatus.FORBIDDEN)
-            except Exception as exc:
-                self.send_json({"ok": False, "error": "Internal server error"}, HTTPStatus.INTERNAL_SERVER_ERROR)
-            return
+            except Exception as e:
+                self._handle_post_error(e, "/api/login")
 
         if effective_path == "/api/logout":
             try:
@@ -6348,9 +6365,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"ok": True}, HTTPStatus.OK, {
                     "Set-Cookie": f"session=; Path={cookie_path}; HttpOnly; SameSite=Lax; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT"
                 })
-            except Exception as exc:
-                self.send_json({"ok": False, "error": "Internal server error"}, HTTPStatus.INTERNAL_SERVER_ERROR)
-            return
+            except Exception as e:
+                self._handle_post_error(e, "/api/logout")
 
         if not self.is_authorized():
             self.send_error_json("Unauthorized", "ERR_UNAUTHORIZED", HTTPStatus.UNAUTHORIZED)
@@ -6413,9 +6429,8 @@ class Handler(BaseHTTPRequestHandler):
                     threading.Thread(target=restart_server, daemon=True).start()
                 else:
                     self.send_json({"ok": True, "restart_needed": False, "reauth_required": reauth_required, "message": "账号密码配置更新成功，已即时生效！"})
-            except Exception as exc:
-                self.send_json({"ok": False, "error": "Internal server error"}, HTTPStatus.INTERNAL_SERVER_ERROR)
-            return
+            except Exception as e:
+                self._handle_post_error(e, "/api/update_credentials")
 
         elif effective_path == "/api/update_settings":
             try:
@@ -6484,9 +6499,8 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     message = policy_message or "配置更新成功，已即时生效！"
                     self.send_json({"ok": True, "restart_needed": False, "message": message})
-            except Exception as exc:
-                self.send_json({"ok": False, "error": "Internal server error"}, HTTPStatus.INTERNAL_SERVER_ERROR)
-            return
+            except Exception as e:
+                self._handle_post_error(e, "/api/update_settings")
 
         elif effective_path == "/api/update_routing":
             try:
@@ -6528,9 +6542,8 @@ class Handler(BaseHTTPRequestHandler):
                 policy_message = enforce_active_node_allowed_by_routing(ui_cfg, "出站路由配置已更新")
                 
                 self.send_json({"ok": True, "message": policy_message or "出站路由配置更新成功，已即时生效！"})
-            except Exception as exc:
-                self.send_json({"ok": False, "error": "Internal server error"}, HTTPStatus.INTERNAL_SERVER_ERROR)
-            return
+            except Exception as e:
+                self._handle_post_error(e, "/api/update_routing")
 
         elif effective_path == "/api/toggle_favorite":
             try:
@@ -6561,15 +6574,14 @@ class Handler(BaseHTTPRequestHandler):
                     policy_message = enforce_active_node_allowed_by_routing(ui_cfg, "收藏列表已更新")
                 
                 self.send_json({"ok": True, "favorite_node_ids": fav_ids, "message": policy_message or ""})
-            except Exception as exc:
-                self.send_json({"ok": False, "error": "Internal server error"}, HTTPStatus.INTERNAL_SERVER_ERROR)
-            return
+            except Exception as e:
+                self._handle_post_error(e, "/api/toggle_favorite")
 
         if effective_path == "/api/check":
             try:
                 self.send_json({"ok": True, "message": maintain_valid_nodes(force=True)})
-            except Exception as exc:
-                self.send_json({"ok": False, "error": "Internal server error"}, HTTPStatus.INTERNAL_SERVER_ERROR)
+            except Exception as e:
+                self._handle_post_error(e, "/api/check")
         elif effective_path == "/api/refresh_nodes":
             try:
                 if maintenance_lock.locked():
@@ -6577,8 +6589,8 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     threading.Thread(target=maintain_valid_nodes, args=(False,), daemon=True).start()
                     self.send_json({"ok": True, "message": "已在后台启动节点更新流程", "running": False})
-            except Exception as exc:
-                self.send_json({"ok": False, "error": "Internal server error"}, HTTPStatus.INTERNAL_SERVER_ERROR)
+            except Exception as e:
+                self._handle_post_error(e, "/api/refresh_nodes")
         elif effective_path == "/api/test_nodes":
             try:
                 payload = self.read_json_body(max_bytes=262144)
@@ -6608,8 +6620,8 @@ class Handler(BaseHTTPRequestHandler):
                         is_connecting = False
                     set_state(is_connecting=False)
                     maintenance_lock.release()
-            except Exception as exc:
-                self.send_json({"ok": False, "error": "Internal server error"}, HTTPStatus.INTERNAL_SERVER_ERROR)
+            except Exception as e:
+                self._handle_post_error(e, "/api/test_nodes")
         elif effective_path == "/api/disconnect":
             try:
                 ui_cfg = load_ui_config()
@@ -6630,14 +6642,14 @@ class Handler(BaseHTTPRequestHandler):
                 last_active_latency = 0
                 set_state(active_openvpn_node_id="", last_check_message="手动断开连接", active_node_latency="无活动连接")
                 self.send_json({"ok": True})
-            except Exception as exc:
-                self.send_json({"ok": False, "error": "Internal server error"}, HTTPStatus.INTERNAL_SERVER_ERROR)
+            except Exception as e:
+                self._handle_post_error(e, "/api/disconnect")
         elif effective_path == "/api/connect":
             try:
                 payload = self.read_json_body()
                 self.send_json({"ok": True, "message": connect_node(str(payload.get("node_id") or payload.get("id") or ""))})
-            except Exception as exc:
-                self.send_json({"ok": False, "error": "Internal server error"}, HTTPStatus.INTERNAL_SERVER_ERROR)
+            except Exception as e:
+                self._handle_post_error(e, "/api/connect")
         elif effective_path == "/api/test_node":
             try:
                 payload = self.read_json_body()
@@ -6662,8 +6674,8 @@ class Handler(BaseHTTPRequestHandler):
                         is_connecting = False
                     set_state(is_connecting=False)
                     maintenance_lock.release()
-            except Exception as exc:
-                self.send_json({"ok": False, "error": "Internal server error"}, HTTPStatus.INTERNAL_SERVER_ERROR)
+            except Exception as e:
+                self._handle_post_error(e, "/api/test_node")
         elif effective_path == "/api/test_proxy":
             try:
                 self.read_request_body()
@@ -6683,8 +6695,8 @@ class Handler(BaseHTTPRequestHandler):
                         proxy_error=result.get("error", "未知错误")
                     )
                 self.send_json(result)
-            except Exception as exc:
-                self.send_json({"ok": False, "error": "Internal server error"}, HTTPStatus.INTERNAL_SERVER_ERROR)
+            except Exception as e:
+                self._handle_post_error(e, "/api/test_proxy")
         else:
             self.send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
 
