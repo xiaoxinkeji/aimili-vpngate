@@ -5805,6 +5805,22 @@ class WebSocketBroadcaster:
 
 
 class Handler(BaseHTTPRequestHandler):
+    def handle_one_request(self):
+        self._request_id = uuid.uuid4().hex[:12]
+        self._request_start = time.time()
+        self._response_status = 500
+        try:
+            super().handle_one_request()
+        finally:
+            duration = (time.time() - self._request_start) * 1000
+            path = getattr(self, '_effective_path', '?')
+            method = self.command if hasattr(self, 'command') else '?'
+            emit("ACCESS", f"method={method} path={path} status={self._response_status} duration={duration:.1f}ms ip={self.client_address[0]} request_id={self._request_id}")
+
+    def send_response(self, code, message=None):
+        self._response_status = code
+        super().send_response(code, message)
+
     def get_secret_path(self) -> str:
         ui_cfg = load_ui_config()
         return ui_cfg.get("secret_path", "EJsW2EeBo9lY")
@@ -5875,8 +5891,9 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, format: str, *args: Any) -> None:
         print(f"[{self.log_date_time_string()}] {format % args}", flush=True)
 
-    def send_bytes(self, body: bytes, content_type: str, status: HTTPStatus = HTTPStatus.OK) -> None:
+    def send_bytes(self, body: bytes, content_type: str, status: HTTPStatus = HTTPStatus.OK, extra_headers: dict[str, str] | None = None) -> None:
         accept_encoding = self.headers.get("Accept-Encoding", "")
+        request_id = getattr(self, '_request_id', None)
         if "gzip" in accept_encoding and len(body) > 1024:
             import gzip
             compressed = gzip.compress(body, compresslevel=6)
@@ -5887,6 +5904,11 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header("Content-Length", str(len(compressed)))
                 self.send_header("Access-Control-Allow-Origin", "*")
                 self.send_header("Cache-Control", "no-store")
+                if request_id:
+                    self.send_header("X-Request-ID", request_id)
+                if extra_headers:
+                    for k, v in extra_headers.items():
+                        self.send_header(k, v)
                 self.end_headers()
                 self.wfile.write(compressed)
                 return
@@ -5895,6 +5917,11 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Cache-Control", "no-store")
+        if request_id:
+            self.send_header("X-Request-ID", request_id)
+        if extra_headers:
+            for k, v in extra_headers.items():
+                self.send_header(k, v)
         self.end_headers()
         self.wfile.write(body)
 
@@ -5976,8 +6003,11 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 pass
 
-    def send_json(self, data: Any, status: HTTPStatus = HTTPStatus.OK) -> None:
-        self.send_bytes(json.dumps(data, ensure_ascii=False).encode("utf-8"), "application/json; charset=utf-8", status)
+    def send_json(self, data: Any, status: HTTPStatus = HTTPStatus.OK, extra_headers: dict[str, str] | None = None) -> None:
+        self.send_bytes(json.dumps(data, ensure_ascii=False).encode("utf-8"), "application/json; charset=utf-8", status, extra_headers)
+
+    def send_error_json(self, error: str, code: str, status: HTTPStatus = HTTPStatus.BAD_REQUEST) -> None:
+        self.send_json({"error": error, "code": code}, status)
 
     def read_request_body(self, max_bytes: int = 65536) -> bytes:
         length = parse_int(self.headers.get("Content-Length"))
@@ -5988,6 +6018,9 @@ class Handler(BaseHTTPRequestHandler):
         return self.rfile.read(length) if length > 0 else b""
 
     def read_json_body(self, max_bytes: int = 65536) -> dict[str, Any]:
+        content_type = self.headers.get("Content-Type", "")
+        if content_type and "application/json" not in content_type:
+            raise ValueError("Content-Type 必须是 application/json")
         body = self.read_request_body(max_bytes)
         if not body:
             return {}
@@ -6123,7 +6156,7 @@ class Handler(BaseHTTPRequestHandler):
             if node and node.get("config_text"):
                 self.send_bytes(node["config_text"].encode("utf-8"), "application/x-openvpn-profile")
             else:
-                self.send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
+                self.send_error_json("Not found", "ERR_NOT_FOUND", HTTPStatus.NOT_FOUND)
         elif effective_path == "/api/version":
             info = self_update.check_update()
             self.send_json({
@@ -6285,17 +6318,11 @@ class Handler(BaseHTTPRequestHandler):
                     token = uuid.uuid4().hex
                     with lock:
                         active_sessions[token] = time.time() + 30 * 24 * 3600
-                    body = json.dumps({"ok": True}).encode("utf-8")
-                    self.send_response(HTTPStatus.OK)
-                    self.send_header("Content-Type", "application/json; charset=utf-8")
-                    self.send_header("Content-Length", str(len(body)))
-                    self.send_header("Cache-Control", "no-store")
-                    self.send_header("Access-Control-Allow-Origin", "*")
                     secret_path = self.get_secret_path()
                     cookie_path = f"/{secret_path}/" if secret_path else "/"
-                    self.send_header("Set-Cookie", f"session={token}; Path={cookie_path}; HttpOnly; SameSite=Lax; Max-Age=2592000")
-                    self.end_headers()
-                    self.wfile.write(body)
+                    self.send_json({"ok": True}, HTTPStatus.OK, {
+                        "Set-Cookie": f"session={token}; Path={cookie_path}; HttpOnly; SameSite=Lax; Max-Age=2592000"
+                    })
                 else:
                     self.send_json({"ok": False, "error": "用户名或密码不正确，请重新输入"}, HTTPStatus.FORBIDDEN)
             except Exception as exc:
@@ -6318,20 +6345,15 @@ class Handler(BaseHTTPRequestHandler):
                         active_sessions.pop(session_token, None)
                 secret_path = self.get_secret_path()
                 cookie_path = f"/{secret_path}/" if secret_path else "/"
-                body = json.dumps({"ok": True}).encode("utf-8")
-                self.send_response(HTTPStatus.OK)
-                self.send_header("Content-Type", "application/json; charset=utf-8")
-                self.send_header("Content-Length", str(len(body)))
-                self.send_header("Cache-Control", "no-store")
-                self.send_header("Set-Cookie", f"session=; Path={cookie_path}; HttpOnly; SameSite=Lax; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT")
-                self.end_headers()
-                self.wfile.write(body)
+                self.send_json({"ok": True}, HTTPStatus.OK, {
+                    "Set-Cookie": f"session=; Path={cookie_path}; HttpOnly; SameSite=Lax; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT"
+                })
             except Exception as exc:
                 self.send_json({"ok": False, "error": "Internal server error"}, HTTPStatus.INTERNAL_SERVER_ERROR)
             return
 
         if not self.is_authorized():
-            self.send_json({"error": "Unauthorized"}, HTTPStatus.UNAUTHORIZED)
+            self.send_error_json("Unauthorized", "ERR_UNAUTHORIZED", HTTPStatus.UNAUTHORIZED)
             return
 
         if effective_path == "/api/update_credentials":
