@@ -80,6 +80,7 @@ class DualStackHTTPServer(ThreadingHTTPServer):
 import vpn_utils
 import proxy_server
 import self_update
+import dns_forwarder
 
 try:
     import publicvpnlist_scraper
@@ -6317,6 +6318,8 @@ class Handler(BaseHTTPRequestHandler):
         elif effective_path == "/api/ws_stats":
             with WebSocketBroadcaster._lock:
                 self.send_json({"ws_clients": len(WebSocketBroadcaster._clients)})
+        elif effective_path == "/api/dns_stats":
+            self.send_json(dns_forwarder.get_dns_stats())
         else:
             self.send_error_json("Not found", "ERR_NOT_FOUND", HTTPStatus.NOT_FOUND)
 
@@ -6888,6 +6891,8 @@ def main() -> None:
             "log_level": LOG_LEVEL,
             "cert_templates_count": len(_discover_cert_templates()),
             "local_proxy": f"http://{'[' + LOCAL_PROXY_HOST + ']' if ':' in LOCAL_PROXY_HOST else LOCAL_PROXY_HOST}:{LOCAL_PROXY_PORT}",
+            "dns_forwarder": f"{dns_forwarder.DNS_FORWARDER_HOST}:{dns_forwarder.DNS_FORWARDER_PORT}",
+            "dns_upstream": dns_forwarder.DNS_UPSTREAM_SERVERS,
             "active_openvpn_node_id": "",
             "last_fetch_status": "starting",
             "last_check_message": "服务已启动，正在初始化网络并获取候选 VPN 节点...",
@@ -6941,6 +6946,9 @@ def main() -> None:
     else:
         print("[警告] 代理网关启动超时，继续执行脚本...", flush=True)
 
+    threading.Thread(target=dns_forwarder.start_dns_forwarder, daemon=True).start()
+    emit("INFO", "Main", "DNS forwarder started")
+
     threading.Thread(target=collector_loop, daemon=True).start()
     threading.Thread(target=background_proxy_checker, daemon=True).start()
     threading.Thread(target=active_node_pinger, daemon=True).start()
@@ -6986,6 +6994,8 @@ def main() -> None:
     print(f"  TUN 设备:      {tun_mark}", flush=True)
     print(f"  日志级别:      {LOG_LEVEL}", flush=True)
     print(f"  日志保留份数:  {LOG_RETENTION_COUNT}", flush=True)
+    print(f"  DNS 转发器:    {dns_forwarder.DNS_FORWARDER_HOST}:{dns_forwarder.DNS_FORWARDER_PORT}", flush=True)
+    print(f"  DNS 上游:      {', '.join(dns_forwarder.DNS_UPSTREAM_SERVERS)}", flush=True)
     print("=" * 56, flush=True)
     print("", flush=True)
 
