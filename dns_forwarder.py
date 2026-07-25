@@ -17,6 +17,7 @@ import struct
 import threading
 import time
 from collections import OrderedDict
+from pathlib import Path
 from typing import Any
 
 
@@ -53,6 +54,104 @@ DNS_UPSTREAM_SERVERS = os.environ.get(
 DNS_FORWARDER_TIMEOUT = _env_int("DNS_FORWARDER_TIMEOUT", 5, 1, 60)
 DNS_FORWARDER_CACHE_SIZE = _env_int("DNS_FORWARDER_CACHE_SIZE", 512, 1, 8192)
 DNS_FORWARDER_CACHE_TTL = _env_int("DNS_FORWARDER_CACHE_TTL", 300, 1, 86400)
+DNS_BLOCKLIST_PATH = os.environ.get("DNS_BLOCKLIST_PATH", "")
+DNS_BLOCKLIST_ENABLED = os.environ.get("DNS_BLOCKLIST_ENABLED", "true").lower() != "false"
+
+# 内置广告/追踪域名黑名单 (常用广告平台)
+_BUILTIN_BLOCKLIST: set[str] = set()
+
+def _load_builtin_blocklist() -> set[str]:
+    domains = {
+        # Google Ads / Analytics
+        "doubleclick.net", "googlesyndication.com", "googleadservices.com",
+        "google-analytics.com", "googletagmanager.com", "googletagservices.com",
+        "adservice.google.com", "pagead2.googlesyndication.com",
+        # Facebook
+        "facebook.com/tr", "connect.facebook.net",
+        # 国内广告
+        "pos.baidu.com", "cpro.baidu.com", "hm.baidu.com",
+        "eiv.baidu.com", "sohu.com/ppp", "tanx.com",
+        "allyes.com", "mmstat.com", "cnzz.com",
+        # 通用追踪
+        "adsrvr.org", "adnxs.com", "criteo.com", "criteo.net",
+        "outbrain.com", "taboola.com", "scorecardresearch.com",
+        "quantserve.com", "addthis.com", "sharethis.com",
+        # 恶意/钓鱼
+        "click.hugedomains.com",
+    }
+    return domains
+
+
+def _load_blocklist_file(filepath: str) -> set[str]:
+    domains: set[str] = set()
+    try:
+        content = Path(filepath).read_text(encoding="utf-8", errors="replace")
+        for line in content.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith("0.0.0.0 ") or line.startswith("127.0.0.1 "):
+                line = line.split(maxsplit=1)[1]
+            domain = line.strip().lower().rstrip(".")
+            if domain and not domain.startswith("#"):
+                domains.add(domain)
+    except Exception:
+        pass
+    return domains
+
+
+_blocklist: set[str] = set()
+_blocklist_lock = threading.Lock()
+_blocked_count: int = 0
+_blocklist_loaded = False
+
+
+def _init_blocklist() -> None:
+    global _blocklist, _blocklist_loaded
+    if not DNS_BLOCKLIST_ENABLED:
+        _blocklist_loaded = True
+        return
+
+    domains = _load_builtin_blocklist()
+
+    if DNS_BLOCKLIST_PATH:
+        file_domains = _load_blocklist_file(DNS_BLOCKLIST_PATH)
+        domains.update(file_domains)
+
+    with _blocklist_lock:
+        _blocklist = domains
+        _blocklist_loaded = True
+
+    loaded = "内置规则" if not DNS_BLOCKLIST_PATH else f"内置规则 + {DNS_BLOCKLIST_PATH}"
+    print(f"[DNS 过滤] 黑名单已加载: {len(domains)} 条规则 ({loaded})", flush=True)
+
+
+def _is_blocked(hostname: str) -> bool:
+    if not DNS_BLOCKLIST_ENABLED or not _blocklist_loaded:
+        return False
+    hostname_lower = hostname.lower().rstrip(".")
+    with _blocklist_lock:
+        if hostname_lower in _blocklist:
+            return True
+    parts = hostname_lower.split(".")
+    for i in range(1, len(parts)):
+        parent = ".".join(parts[i:])
+        with _blocklist_lock:
+            if parent in _blocklist:
+                return True
+    return False
+
+
+def _build_blocked_response(query_data: bytes) -> bytes:
+    """返回 NXDOMAIN 或 127.0.0.1 阻断响应。"""
+    if len(query_data) < 12:
+        return b""
+    tx_id = query_data[:2]
+    flags = struct.unpack_from("!H", query_data, 2)[0]
+    flags = (flags & 0xFFF0) | 3  # NXDOMAIN
+    flags |= 0x8000
+    header = tx_id + struct.pack("!H", flags) + query_data[4:12]
+    return header
 
 # DNS 记录类型
 TYPE_A = 1
@@ -282,6 +381,12 @@ def handle_dns_query(data: bytes, client_addr: tuple[str, int]) -> bytes | None:
     if not queries:
         return _build_dns_error_response(data, 1)
 
+    # 域名黑名单检查
+    if _is_blocked(queries[0][0]):
+        global _blocked_count
+        _blocked_count += 1
+        return _build_blocked_response(data)
+
     cached = _dns_cache.get(queries[0][0], queries[0][1])
     if cached is not None:
         tx_id = data[:2]
@@ -300,6 +405,8 @@ def handle_dns_query(data: bytes, client_addr: tuple[str, int]) -> bytes | None:
 
 
 def start_dns_forwarder(host: str = DNS_FORWARDER_HOST, port: int = DNS_FORWARDER_PORT) -> None:
+    _init_blocklist()
+
     is_ipv6 = ":" in host or host == ""
     af = socket.AF_INET6 if is_ipv6 else socket.AF_INET
     sock = None
@@ -369,4 +476,7 @@ def get_dns_stats() -> dict[str, Any]:
         "upstream_servers": DNS_UPSTREAM_SERVERS,
         "listen_host": DNS_FORWARDER_HOST,
         "listen_port": DNS_FORWARDER_PORT,
+        "blocklist_enabled": DNS_BLOCKLIST_ENABLED,
+        "blocklist_rules": len(_blocklist) if _blocklist_loaded else 0,
+        "blocked_count": _blocked_count,
     }
