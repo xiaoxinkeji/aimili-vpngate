@@ -5759,9 +5759,8 @@ def active_node_pinger() -> None:
 
 
 class WebSocketBroadcaster:
-    """简易 WebSocket 广播器，用于向 Dashboard 推送节点状态变更"""
-
     _clients: list[Any] = []
+    _client_count: int = 0
     _lock = threading.Lock()
 
     @classmethod
@@ -5780,6 +5779,9 @@ class WebSocketBroadcaster:
     @classmethod
     def broadcast(cls, payload: dict[str, Any]) -> None:
         import struct
+        with cls._lock:
+            cls._client_count = len(cls._clients)
+        payload["ws_clients"] = cls._client_count
         message = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         frame = bytearray()
         frame.append(0x81)  # FIN + text opcode
@@ -6312,8 +6314,11 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception as e:
                     print(f"[API Logs] Error reading log file: {e}", flush=True)
             self.send_json({"logs": entries})
+        elif effective_path == "/api/ws_stats":
+            with WebSocketBroadcaster._lock:
+                self.send_json({"ws_clients": len(WebSocketBroadcaster._clients)})
         else:
-            self.send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
+            self.send_error_json("Not found", "ERR_NOT_FOUND", HTTPStatus.NOT_FOUND)
 
     def do_OPTIONS(self) -> None:
         self.send_response(HTTPStatus.NO_CONTENT)
@@ -6706,7 +6711,7 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 self._handle_post_error(e, "/api/test_proxy")
         else:
-            self.send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
+            self.send_error_json("Not found", "ERR_NOT_FOUND", HTTPStatus.NOT_FOUND)
 
 class Tee:
     def __init__(self, file_path: str):
