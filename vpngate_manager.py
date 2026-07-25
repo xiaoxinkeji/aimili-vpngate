@@ -44,6 +44,8 @@ def _ipv4_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
 socket.getaddrinfo = _ipv4_getaddrinfo
 
 class DualStackHTTPServer(ThreadingHTTPServer):
+    allow_reuse_address = True
+
     def __init__(self, server_address, RequestHandlerClass, bind_and_activate=True):
         host, port = server_address
         if ":" in host or host == "":
@@ -5898,7 +5900,9 @@ class Handler(BaseHTTPRequestHandler):
         return ""
 
     def log_message(self, format: str, *args: Any) -> None:
-        print(f"[{self.log_date_time_string()}] {format % args}", flush=True)
+        request_id = getattr(self, '_request_id', '')
+        tag = f"[{request_id}] " if request_id else ""
+        print(f"[{self.log_date_time_string()}] {tag}{format % args}", flush=True)
 
     def send_bytes(self, body: bytes, content_type: str, status: HTTPStatus = HTTPStatus.OK, extra_headers: dict[str, str] | None = None) -> None:
         accept_encoding = self.headers.get("Accept-Encoding", "")

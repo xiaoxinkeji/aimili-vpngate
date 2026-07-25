@@ -17,6 +17,7 @@ def parse_positive_int(value: str | None, default: int) -> int:
         return default
 
 MAX_PROXY_CONNECTIONS = parse_positive_int(os.environ.get("LOCAL_PROXY_MAX_CONNECTIONS"), 256)
+RELAY_BUFFER_MAX = parse_positive_int(os.environ.get("LOCAL_PROXY_RELAY_BUFFER_KB"), 256) * 1024
 proxy_connection_sem = threading.BoundedSemaphore(MAX_PROXY_CONNECTIONS)
 
 def parse_int(value: Any) -> int:
@@ -233,7 +234,7 @@ def relay(left: socket.socket, right: socket.socket) -> None:
     sockets = [left, right]
     write_bufs: dict[socket.socket, bytearray] = {}
     while True:
-        read_list = [s for s in sockets if s not in write_bufs or len(write_bufs[s]) < 262144]
+        read_list = [s for s in sockets if s not in write_bufs or len(write_bufs[s]) < RELAY_BUFFER_MAX]
         write_list = [s for s in sockets if s in write_bufs and len(write_bufs[s]) > 0]
         if not read_list and not write_list:
             read_list = sockets[:]
