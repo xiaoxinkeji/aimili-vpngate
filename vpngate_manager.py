@@ -6354,6 +6354,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(dns_forwarder.get_dns_stats())
         elif effective_path == "/api/geoip_stats":
             self.send_json(geoip.get_stats())
+        elif effective_path == "/api/traffic":
+            self.send_json(proxy_server.get_traffic_stats())
         else:
             self.send_error_json("Not found", "ERR_NOT_FOUND", HTTPStatus.NOT_FOUND)
 
@@ -6929,6 +6931,7 @@ def main() -> None:
             "dns_upstream": dns_forwarder.DNS_UPSTREAM_SERVERS,
             "geoip_loaded": geoip.is_loaded(),
             "geoip_records": len(geoip._db) if geoip.is_loaded() else 0,
+            "traffic": proxy_server.get_traffic_stats(),
             "active_openvpn_node_id": "",
             "last_fetch_status": "starting",
             "last_check_message": "服务已启动，正在初始化网络并获取候选 VPN 节点...",

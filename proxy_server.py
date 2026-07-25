@@ -20,6 +20,128 @@ MAX_PROXY_CONNECTIONS = parse_positive_int(os.environ.get("LOCAL_PROXY_MAX_CONNE
 RELAY_BUFFER_MAX = parse_positive_int(os.environ.get("LOCAL_PROXY_RELAY_BUFFER_KB"), 256) * 1024
 proxy_connection_sem = threading.BoundedSemaphore(MAX_PROXY_CONNECTIONS)
 
+
+class TrafficStats:
+    """线程安全的代理流量统计器。"""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self.bytes_in: int = 0
+        self.bytes_out: int = 0
+        self.total_connections: int = 0
+        self.active_connections: int = 0
+        self._window: list[tuple[float, int, int]] = []
+
+    def add_connection(self) -> None:
+        with self._lock:
+            self.total_connections += 1
+            self.active_connections += 1
+
+    def remove_connection(self) -> None:
+        with self._lock:
+            self.active_connections = max(0, self.active_connections - 1)
+
+    def add_bytes(self, in_bytes: int, out_bytes: int) -> None:
+        now = time.time()
+        with self._lock:
+            self.bytes_in += in_bytes
+            self.bytes_out += out_bytes
+            self._window.append((now, in_bytes, out_bytes))
+            cutoff = now - 5.0
+            self._window = [(t, bi, bo) for t, bi, bo in self._window if t > cutoff]
+
+    def throughput(self) -> tuple[float, float]:
+        """返回最近 5 秒内的平均吞吐量 (bytes/s)。"""
+        with self._lock:
+            if not self._window:
+                return 0.0, 0.0
+            now = time.time()
+            cutoff = now - 5.0
+            total_in = 0
+            total_out = 0
+            for t, bi, bo in self._window:
+                if t > cutoff:
+                    total_in += bi
+                    total_out += bo
+            duration = now - self._window[0][0] if self._window else 5.0
+            if duration <= 0:
+                return 0.0, 0.0
+            return total_in / duration, total_out / duration
+
+    def snapshot(self) -> dict[str, Any]:
+        in_rate, out_rate = self.throughput()
+        with self._lock:
+            return {
+                "bytes_in": self.bytes_in,
+                "bytes_out": self.bytes_out,
+                "bytes_in_mb": round(self.bytes_in / (1024 * 1024), 2),
+                "bytes_out_mb": round(self.bytes_out / (1024 * 1024), 2),
+                "throughput_in_mbps": round(in_rate * 8 / 1_000_000, 2),
+                "throughput_out_mbps": round(out_rate * 8 / 1_000_000, 2),
+                "total_connections": self.total_connections,
+                "active_connections": self.active_connections,
+            }
+
+
+_traffic = TrafficStats()
+get_traffic_stats = _traffic.snapshot
+
+
+def _counted_relay(left: socket.socket, right: socket.socket) -> None:
+    """带流量统计的数据中继，行为同 relay()。"""
+    left.setblocking(False)
+    right.setblocking(False)
+    sockets = [left, right]
+    write_bufs: dict[socket.socket, bytearray] = {}
+    in_bytes = 0
+    out_bytes = 0
+    _traffic.add_connection()
+    try:
+        while True:
+            read_list = [s for s in sockets if s not in write_bufs or len(write_bufs[s]) < RELAY_BUFFER_MAX]
+            write_list = [s for s in sockets if s in write_bufs and len(write_bufs[s]) > 0]
+            if not read_list and not write_list:
+                read_list = sockets[:]
+            readable, writable, errored = select.select(read_list, write_list, sockets, 30)
+            if errored:
+                return
+            if not readable and not writable:
+                continue
+            for sock in writable:
+                buf = write_bufs.get(sock)
+                if not buf:
+                    continue
+                try:
+                    sent = sock.send(bytes(buf))
+                    if sent > 0:
+                        del buf[:sent]
+                    if len(buf) == 0:
+                        del write_bufs[sock]
+                except (BlockingIOError, InterruptedError):
+                    pass
+                except OSError:
+                    return
+            for sock in readable:
+                other = right if sock is left else left
+                try:
+                    data = sock.recv(65536)
+                    if not data:
+                        _traffic.add_bytes(in_bytes, out_bytes)
+                        return
+                    target_buf = write_bufs.setdefault(other, bytearray())
+                    target_buf.extend(data)
+                    if sock is left:
+                        in_bytes += len(data)
+                    else:
+                        out_bytes += len(data)
+                except (BlockingIOError, InterruptedError):
+                    pass
+                except OSError:
+                    _traffic.add_bytes(in_bytes, out_bytes)
+                    return
+    finally:
+        _traffic.remove_connection()
+
 def parse_int(value: Any) -> int:
     try:
         return int(value)
@@ -472,7 +594,7 @@ def socks5_client(client: socket.socket, first_byte: bytes) -> None:
                 pass
             raise
         client.sendall(b"\x05\x00\x00\x01\x00\x00\x00\x00\x00\x00")
-        relay(client, upstream)
+        _counted_relay(client, upstream)
     finally:
         client.close()
         if upstream:
@@ -524,7 +646,7 @@ def http_client(client: socket.socket, first_byte: bytes) -> None:
             client.sendall(b"HTTP/1.1 200 Connection Established\r\n\r\n")
             if rest:
                 upstream.sendall(rest)
-            relay(client, upstream)
+            _counted_relay(client, upstream)
             return
 
         try:
@@ -561,7 +683,7 @@ def http_client(client: socket.socket, first_byte: bytes) -> None:
         request = f"{method} {path} {version}\r\n" + "\r\n".join(headers) + "\r\nConnection: close\r\n\r\n"
         upstream = create_connection((hostname, port), timeout=20)
         upstream.sendall(request.encode("iso-8859-1") + rest)
-        relay(client, upstream)
+        _counted_relay(client, upstream)
     except Exception as e:
         print(f"[HTTP 代理失败] 代理请求目标连接失败: {e}", flush=True)
         try:
