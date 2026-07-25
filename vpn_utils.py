@@ -18,6 +18,13 @@ IP_CACHE_FILE = DATA_DIR / "ip_cache.json"
 
 ip_cache_lock = threading.RLock()
 
+try:
+    import geoip
+    _HAS_GEOIP = True
+    geoip.auto_init(DATA_DIR)
+except ImportError:
+    _HAS_GEOIP = False
+
 COUNTRY_TRANSLATIONS = {
     "Japan": "日本",
     "Korea Republic of": "韩国",
@@ -571,6 +578,14 @@ def enrich_ip_info(nodes: list[dict[str, Any]]) -> None:
             node["location"] = cached.get("location", "")
             node["ip_type"] = cached.get("ip_type", "")
             node["quality"] = cached.get("quality", "")
+        elif _HAS_GEOIP and geoip.is_loaded():
+            # ip-api.com 查询失败或此 IP 未被查询到，使用离线 GeoIP 兜底
+            geo_result = geoip.lookup(ip)
+            if geo_result:
+                if not node.get("location"):
+                    node["location"] = geo_result.get("country_name", "")
+                if not node.get("country"):
+                    node["country"] = geo_result.get("country_code", "")
 
 
 def diagnose_api_failure(api_url: str = "https://www.vpngate.net/api/iphone/") -> tuple[int, str]:

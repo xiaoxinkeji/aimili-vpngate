@@ -81,6 +81,7 @@ import vpn_utils
 import proxy_server
 import self_update
 import dns_forwarder
+import geoip
 
 try:
     import publicvpnlist_scraper
@@ -6351,6 +6352,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"ws_clients": len(WebSocketBroadcaster._clients)})
         elif effective_path == "/api/dns_stats":
             self.send_json(dns_forwarder.get_dns_stats())
+        elif effective_path == "/api/geoip_stats":
+            self.send_json(geoip.get_stats())
         else:
             self.send_error_json("Not found", "ERR_NOT_FOUND", HTTPStatus.NOT_FOUND)
 
@@ -6924,6 +6927,8 @@ def main() -> None:
             "local_proxy": f"http://{'[' + LOCAL_PROXY_HOST + ']' if ':' in LOCAL_PROXY_HOST else LOCAL_PROXY_HOST}:{LOCAL_PROXY_PORT}",
             "dns_forwarder": f"{dns_forwarder.DNS_FORWARDER_HOST}:{dns_forwarder.DNS_FORWARDER_PORT}",
             "dns_upstream": dns_forwarder.DNS_UPSTREAM_SERVERS,
+            "geoip_loaded": geoip.is_loaded(),
+            "geoip_records": len(geoip._db) if geoip.is_loaded() else 0,
             "active_openvpn_node_id": "",
             "last_fetch_status": "starting",
             "last_check_message": "服务已启动，正在初始化网络并获取候选 VPN 节点...",
@@ -7027,6 +7032,11 @@ def main() -> None:
     print(f"  日志保留份数:  {LOG_RETENTION_COUNT}", flush=True)
     print(f"  DNS 转发器:    {dns_forwarder.DNS_FORWARDER_HOST}:{dns_forwarder.DNS_FORWARDER_PORT}", flush=True)
     print(f"  DNS 上游:      {', '.join(dns_forwarder.DNS_UPSTREAM_SERVERS)}", flush=True)
+    if geoip.is_loaded():
+        geo_stats = geoip.get_stats()
+        print(f"  GeoIP 数据库:  {geo_stats['records']} 记录", flush=True)
+    else:
+        print(f"  GeoIP 数据库:  未加载 (放置 geoip.csv 到数据目录启用)", flush=True)
     print("=" * 56, flush=True)
     print("", flush=True)
 
