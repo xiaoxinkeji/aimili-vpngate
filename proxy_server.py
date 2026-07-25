@@ -270,8 +270,118 @@ def relay(left: socket.socket, right: socket.socket) -> None:
             except OSError:
                 return
 
+def _socks5_address_bytes(host: str) -> tuple[int, bytes]:
+    try:
+        packed = socket.inet_aton(host)
+        return 1, packed
+    except OSError:
+        pass
+    try:
+        packed = socket.inet_pton(socket.AF_INET6, host)
+        return 4, packed
+    except OSError:
+        pass
+    host_enc = host.encode("idna")
+    if len(host_enc) > 255:
+        raise ValueError("hostname too long")
+    return 3, bytes([len(host_enc)]) + host_enc
+
+
+def _create_udp_outbound_socket(timeout: float = 5.0) -> socket.socket:
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.settimeout(timeout)
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_BINDTODEVICE, b"tun0")
+    except OSError:
+        pass
+    return sock
+
+
+def _udp_associate_reply(bind_addr: str, bind_port: int) -> bytes:
+    atype, addr_bytes = _socks5_address_bytes(bind_addr)
+    return b"\x05\x00\x00" + bytes([atype]) + addr_bytes + bind_port.to_bytes(2, "big")
+
+
+def socks5_udp_relay(relay_sock: socket.socket, client_addr: tuple[str, int],
+                     shutdown_event: threading.Event, timeout: float = 5.0) -> None:
+    while not shutdown_event.is_set():
+        try:
+            data, addr = relay_sock.recvfrom(65536)
+        except socket.timeout:
+            continue
+        except OSError:
+            if shutdown_event.is_set():
+                break
+            continue
+
+        if not data or len(data) < 10:
+            continue
+
+        rsv = data[0:2]
+        frag = data[2]
+        atype = data[3]
+
+        if frag != 0:
+            continue
+
+        offset = 4
+        if atype == 1:
+            if offset + 4 > len(data):
+                continue
+            dst_host = socket.inet_ntoa(data[offset:offset + 4])
+            offset += 4
+        elif atype == 3:
+            if offset + 1 > len(data):
+                continue
+            name_len = data[offset]
+            offset += 1
+            if offset + name_len > len(data):
+                continue
+            dst_host = data[offset:offset + name_len].decode("idna", errors="replace")
+            offset += name_len
+        elif atype == 4:
+            if offset + 16 > len(data):
+                continue
+            dst_host = socket.inet_ntop(socket.AF_INET6, data[offset:offset + 16])
+            offset += 16
+        else:
+            continue
+
+        if offset + 2 > len(data):
+            continue
+        dst_port = int.from_bytes(data[offset:offset + 2], "big")
+        offset += 2
+        payload = data[offset:]
+
+        resolved_ip = resolve_dns_over_tun0(dst_host)
+        if resolved_ip is None:
+            continue
+
+        out_sock = _create_udp_outbound_socket(timeout)
+        try:
+            out_sock.sendto(payload, (resolved_ip, dst_port))
+            try:
+                resp_data, resp_addr = out_sock.recvfrom(65536)
+                resp_host = resp_addr[0]
+                resp_port = resp_addr[1]
+                atype_r, addr_bytes_r = _socks5_address_bytes(resp_host)
+                response = b"\x00\x00\x00" + bytes([atype_r]) + addr_bytes_r
+                response += resp_port.to_bytes(2, "big") + resp_data
+                relay_sock.sendto(response, addr)
+            except socket.timeout:
+                pass
+        except Exception:
+            pass
+        finally:
+            try:
+                out_sock.close()
+            except Exception:
+                pass
+
+
 def socks5_client(client: socket.socket, first_byte: bytes) -> None:
     upstream = None
+    udp_relay_sock = None
     try:
         methods_count = recv_exact(client, 1)[0]
         methods = recv_exact(client, methods_count)
@@ -293,9 +403,11 @@ def socks5_client(client: socket.socket, first_byte: bytes) -> None:
         else:
             client.sendall(b"\x05\x00")
         version, command, _, address_type = recv_exact(client, 4)
-        if version != 5 or command != 1:
+        if version != 5:
             client.sendall(b"\x05\x07\x00\x01\x00\x00\x00\x00\x00\x00")
             return
+
+        # Parse destination address (shared by CONNECT and UDP ASSOCIATE)
         if address_type == 1:
             host = socket.inet_ntoa(recv_exact(client, 4))
         elif address_type == 3:
@@ -306,6 +418,50 @@ def socks5_client(client: socket.socket, first_byte: bytes) -> None:
             client.sendall(b"\x05\x08\x00\x01\x00\x00\x00\x00\x00\x00")
             return
         port = int.from_bytes(recv_exact(client, 2), "big")
+
+        if command == 3:
+            # UDP ASSOCIATE — allocate UDP relay socket
+            udp_relay_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            udp_relay_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                udp_relay_sock.bind(("0.0.0.0", 0))
+            except OSError:
+                client.sendall(b"\x05\x01\x00\x01\x00\x00\x00\x00\x00\x00")
+                return
+            relay_host, relay_port = udp_relay_sock.getsockname()
+            client_addr = client.getpeername()
+
+            # Send UDP ASSOCIATE success reply
+            reply = _udp_associate_reply("0.0.0.0", relay_port)
+            client.sendall(reply)
+
+            # Start UDP relay thread
+            shutdown_event = threading.Event()
+            relay_thread = threading.Thread(
+                target=socks5_udp_relay,
+                args=(udp_relay_sock, client_addr, shutdown_event),
+                daemon=True,
+            )
+            relay_thread.start()
+
+            # Keep TCP control connection alive
+            try:
+                client.settimeout(300)
+                while True:
+                    chunk = client.recv(1)
+                    if not chunk:
+                        break
+            except Exception:
+                pass
+            finally:
+                shutdown_event.set()
+            return
+
+        if command != 1:
+            client.sendall(b"\x05\x07\x00\x01\x00\x00\x00\x00\x00\x00")
+            return
+
+        # CONNECT — existing logic
         try:
             upstream = create_connection((host, port), timeout=20)
         except Exception as e:
@@ -321,6 +477,11 @@ def socks5_client(client: socket.socket, first_byte: bytes) -> None:
         client.close()
         if upstream:
             upstream.close()
+        if udp_relay_sock:
+            try:
+                udp_relay_sock.close()
+            except Exception:
+                pass
 
 def read_http_header(client: socket.socket, first_byte: bytes) -> bytes:
     data = first_byte
