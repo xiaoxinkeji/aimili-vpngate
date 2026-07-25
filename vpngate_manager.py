@@ -6973,6 +6973,10 @@ def main() -> None:
     print(f"  代理地址:      http://{LOCAL_PROXY_HOST}:{LOCAL_PROXY_PORT}", flush=True)
     if os.environ.get("METRICS_ENABLED", "true") == "true":
         print(f"  监控指标:      http://{display_host}:{os.environ.get('METRICS_PORT', '9798')}/metrics", flush=True)
+    tun_mark = "可用" if TUN_AVAILABLE else "不可用(仅协议层)"
+    print(f"  TUN 设备:      {tun_mark}", flush=True)
+    print(f"  日志级别:      {LOG_LEVEL}", flush=True)
+    print(f"  日志保留份数:  {LOG_RETENTION_COUNT}", flush=True)
     print("=" * 56, flush=True)
     print("", flush=True)
 
