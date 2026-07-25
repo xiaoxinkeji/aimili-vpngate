@@ -143,6 +143,7 @@ MAX_TEST_WORKERS = env_int("MAX_TEST_WORKERS", 8, 1, 20)
 AUTO_EXPIRE_HOURS = env_int("AUTO_EXPIRE_HOURS", 48, 6, 720)
 API_RATE_LIMIT_PER_MINUTE = env_int("API_RATE_LIMIT_PER_MINUTE", 60, 5, 600)
 LOG_MAX_SIZE_MB = env_int("LOG_MAX_SIZE_MB", 50, 5, 500)
+LOG_RETENTION_COUNT = env_int("LOG_RETENTION_COUNT", 3, 1, 20)
 WORKER_CPU_LOAD_LIMIT = env_float("WORKER_CPU_LOAD_LIMIT", 0.7, 0.1, 2.0)
 WORKER_MEM_LIMIT_MB = env_int("WORKER_MEM_LIMIT_MB", 500, 100, 4096)
 
@@ -6493,7 +6494,7 @@ class Handler(BaseHTTPRequestHandler):
                     def restart_server():
                         time.sleep(2)
                         print("[系统] 代理出站端口变更，进程即将退出以触发自动重启...", flush=True)
-                        os._exit(0)
+                        signal.raise_signal(signal.SIGTERM)
                     
                     threading.Thread(target=restart_server, daemon=True).start()
                 else:
@@ -6719,14 +6720,19 @@ class Tee:
             size_mb = Path(self._path).stat().st_size / (1024 * 1024)
             if size_mb > LOG_MAX_SIZE_MB:
                 with self._write_lock:
-                    backup = f"{self._path}.1"
-                    if Path(backup).exists():
-                        Path(backup).unlink()
+                    oldest = f"{self._path}.{LOG_RETENTION_COUNT}"
+                    if Path(oldest).exists():
+                        Path(oldest).unlink()
+                    for n in range(LOG_RETENTION_COUNT - 1, 0, -1):
+                        src = f"{self._path}.{n}"
+                        dst = f"{self._path}.{n + 1}"
+                        if Path(src).exists():
+                            Path(src).rename(dst)
                     self.file.flush()
                     self.file.close()
-                    Path(self._path).rename(backup)
+                    Path(self._path).rename(f"{self._path}.1")
                     self.file = open(self._path, "a", encoding="utf-8")
-                print(f"[日志轮转] 日志文件已达到 {LOG_MAX_SIZE_MB}MB，已轮转备份为 {backup}", flush=True)
+                print(f"[日志轮转] 日志文件已达到 {LOG_MAX_SIZE_MB}MB，已轮转备份", flush=True)
         except Exception:
             pass
 
@@ -6796,6 +6802,9 @@ def main() -> None:
         new_cooldown = env_int("RETEST_COOLDOWN_SECONDS", 900, 0, 86400)
         # API 断路器 (v1.4.1)
         new_circuit = env_int("API_CIRCUIT_BREAKER_SECONDS", 600, 0, 86400)
+        # 日志级别 (v1.15.0)
+        new_log_level = os.environ.get("LOG_LEVEL", "INFO").strip().upper()
+        new_log_level_num = _LOG_LEVEL_ORDER.get(new_log_level, 1)
         changed = []
         if new_rate != API_RATE_LIMIT_PER_MINUTE:
             globals()["API_RATE_LIMIT_PER_MINUTE"] = new_rate; changed.append(f"API_RATE_LIMIT_PER_MINUTE={new_rate}")
@@ -6807,6 +6816,10 @@ def main() -> None:
             globals()["RETEST_COOLDOWN_SECONDS"] = new_cooldown; changed.append(f"RETEST_COOLDOWN_SECONDS={new_cooldown}")
         if new_circuit != API_CIRCUIT_BREAKER_SECONDS:
             globals()["API_CIRCUIT_BREAKER_SECONDS"] = new_circuit; changed.append(f"API_CIRCUIT_BREAKER_SECONDS={new_circuit}")
+        if new_log_level_num != LOG_LEVEL_NUM:
+            globals()["LOG_LEVEL"] = new_log_level
+            globals()["LOG_LEVEL_NUM"] = new_log_level_num
+            changed.append(f"LOG_LEVEL={new_log_level}")
         if changed:
             print(f"[SIGHUP] 配置已重载: {', '.join(changed)}", flush=True)
             log_to_json("INFO", "Main", f"Hot-reloaded: {', '.join(changed)}")
@@ -6859,6 +6872,7 @@ def main() -> None:
             "log_max_size_mb": LOG_MAX_SIZE_MB,
             "worker_cpu_load_limit": WORKER_CPU_LOAD_LIMIT,
             "worker_mem_limit_mb": WORKER_MEM_LIMIT_MB,
+            "log_level": LOG_LEVEL,
             "cert_templates_count": len(_discover_cert_templates()),
             "local_proxy": f"http://{'[' + LOCAL_PROXY_HOST + ']' if ':' in LOCAL_PROXY_HOST else LOCAL_PROXY_HOST}:{LOCAL_PROXY_PORT}",
             "active_openvpn_node_id": "",
