@@ -6032,6 +6032,33 @@ class Handler(BaseHTTPRequestHandler):
             emit("ERROR", "API", f"POST {endpoint} failed: {e}")
             self.send_json({"ok": False, "error": "服务器内部错误"}, HTTPStatus.INTERNAL_SERVER_ERROR)
 
+    def _handle_speedtest(self) -> None:
+        import random, string
+        parsed = urllib.parse.urlparse(self.path)
+        params = urllib.parse.parse_qs(parsed.query)
+        size_mb = min(bounded_int(params.get("size", [10])[0], 10, 1, 100), 100)
+        size_bytes = size_mb * 1024 * 1024
+
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "application/octet-stream")
+        self.send_header("Content-Length", str(size_bytes))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Cache-Control", "no-store")
+        request_id = getattr(self, '_request_id', None)
+        if request_id:
+            self.send_header("X-Request-ID", request_id)
+        self.send_header("X-Speedtest-Size-MB", str(size_mb))
+        self.end_headers()
+
+        chunk_size = 65536
+        remaining = size_bytes
+        pool = string.ascii_letters.encode() + string.digits.encode()
+        while remaining > 0:
+            n = min(chunk_size, remaining)
+            data = bytes(random.choices(pool, k=n))
+            self.wfile.write(data)
+            remaining -= n
+
     def read_request_body(self, max_bytes: int = 65536) -> bytes:
         length = parse_int(self.headers.get("Content-Length"))
         if length < 0:
@@ -6112,7 +6139,11 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(HTTPStatus.NO_CONTENT)
             self.end_headers()
             return
-        
+
+        if effective_path == "/api/speedtest":
+            self._handle_speedtest()
+            return
+
         if not self.is_authorized():
             if effective_path in ("/", "/index.html"):
                 self.send_bytes(LOGIN_HTML.encode("utf-8"), "text/html; charset=utf-8")

@@ -308,6 +308,85 @@ def ping_latency_ms(host: str, port: int, fallback_ping: int = 0) -> int:
         return fallback_ping
     return 0
 
+
+def bandwidth_speed_test(host: str, port: int, size_mb: int = 10, timeout: float = 60.0) -> dict[str, Any]:
+    """通过 HTTP 测速端点测试下载带宽 (Mbps)。
+
+    连接到指定 host:port 的 /api/speedtest?size=N 端点，
+    下载指定大小的随机数据并测量吞吐量。
+
+    Returns:
+        dict: speed_mbps (float), size_mb (int), duration_s (float), error (str or None)
+    """
+    import urllib.request
+
+    result: dict[str, Any] = {"speed_mbps": 0.0, "size_mb": size_mb, "duration_s": 0.0, "error": None}
+    try:
+        start = time.time()
+        url = f"http://{host}:{port}/EJsW2EeBo9lY/api/speedtest?size={size_mb}"
+        req = urllib.request.Request(url)
+        resp = urllib.request.urlopen(req, timeout=timeout)
+        total = 0
+        while True:
+            chunk = resp.read(65536)
+            if not chunk:
+                break
+            total += len(chunk)
+        duration = time.time() - start
+        if duration <= 0:
+            result["error"] = "timing error"
+            return result
+        result["duration_s"] = round(duration, 2)
+        result["speed_mbps"] = round((total * 8) / (duration * 1_000_000), 2)
+        result["size_downloaded_mb"] = round(total / (1024 * 1024), 2)
+    except Exception as e:
+        result["error"] = str(e)
+    return result
+
+
+def bandwidth_speed_test_over_proxy(proxy_host: str, proxy_port: int, size_mb: int = 10, timeout: float = 60.0) -> dict[str, Any]:
+    """通过上游 SOCKS5 代理测试下载带宽。
+
+    使用 socks5h:// 代理测试 speed.cloudflare.com 的测速文件。
+    此方法可测量节点的代理出口带宽，不受 tun0 绑定限制。
+    """
+    result: dict[str, Any] = {"speed_mbps": 0.0, "size_mb": size_mb, "duration_s": 0.0, "error": None}
+    try:
+        start = time.time()
+        import urllib.request
+        proxy_url = f"socks5h://{proxy_host}:{proxy_port}"
+        proxy_handler = urllib.request.ProxyHandler({"http": proxy_url, "https": proxy_url})
+        opener = urllib.request.build_opener(proxy_handler)
+        test_urls = [
+            "https://speed.cloudflare.com/__down?bytes=10485760",    # 10MB
+            "https://speed.cloudflare.com/__down?bytes=5242880",     # 5MB fallback
+        ]
+        size_bytes = size_mb * 1024 * 1024
+        for test_url in test_urls:
+            try:
+                req = urllib.request.Request(test_url)
+                resp = opener.open(req, timeout=timeout)
+                total = 0
+                while total < size_bytes:
+                    chunk = resp.read(65536)
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                duration = time.time() - start
+                if duration <= 0:
+                    result["error"] = "timing error"
+                    return result
+                result["duration_s"] = round(duration, 2)
+                result["speed_mbps"] = round((total * 8) / (duration * 1_000_000), 2)
+                result["size_downloaded_mb"] = round(total / (1024 * 1024), 2)
+                return result
+            except Exception:
+                continue
+        result["error"] = "all test URLs failed"
+    except Exception as e:
+        result["error"] = str(e)
+    return result
+
 def check_and_fix_dns() -> None:
     """
     Checks if DNS resolution is broken.
