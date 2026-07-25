@@ -307,6 +307,10 @@ def dns_query_over_tun0(host: str, qtype: int, dns_server: str, timeout: float) 
         return None
     return None
 
+_dns_cache: dict[str, tuple[str, float]] = {}
+_dns_cache_lock = threading.Lock()
+
+
 def resolve_dns_over_tun0(host: str, dns_server: str = "8.8.8.8", timeout: float = 3.0) -> str | None:
     try:
         socket.inet_aton(host)
@@ -318,7 +322,52 @@ def resolve_dns_over_tun0(host: str, dns_server: str = "8.8.8.8", timeout: float
         return host
     except OSError:
         pass
-    return dns_query_over_tun0(host, 1, dns_server, timeout) or dns_query_over_tun0(host, 28, dns_server, timeout)
+
+    now = time.time()
+    with _dns_cache_lock:
+        entry = _dns_cache.get(host)
+        if entry is not None and now - entry[1] < 300:
+            return entry[0]
+
+    result = dns_query_over_tun0(host, 1, dns_server, timeout) or dns_query_over_tun0(host, 28, dns_server, timeout)
+
+    if result is not None:
+        with _dns_cache_lock:
+            _dns_cache[host] = (result, time.time())
+            if len(_dns_cache) > 512:
+                for key in sorted(_dns_cache.keys()):
+                    if len(_dns_cache) <= 384:
+                        break
+                    del _dns_cache[key]
+
+    return result
+
+def _optimize_socket(sock: socket.socket) -> None:
+    try:
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+    except OSError:
+        pass
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+    except OSError:
+        pass
+    try:
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 60)
+    except (OSError, AttributeError):
+        pass
+    try:
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 10)
+    except (OSError, AttributeError):
+        pass
+    try:
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 3)
+    except (OSError, AttributeError):
+        pass
+    try:
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_QUICKACK, 1)
+    except (OSError, AttributeError):
+        pass
+
 
 def create_connection(address: tuple[str, int], timeout: float = 20) -> socket.socket:
     host, port = address
@@ -336,6 +385,7 @@ def create_connection(address: tuple[str, int], timeout: float = 20) -> socket.s
             sock.settimeout(timeout)
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_BINDTODEVICE, b"tun0")
             sock.connect(sa)
+            _optimize_socket(sock)
             return sock
         except OSError as e:
             err = e
