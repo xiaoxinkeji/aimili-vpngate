@@ -6874,6 +6874,7 @@ def main() -> None:
             "auto_expire_hours": AUTO_EXPIRE_HOURS,
             "api_rate_limit_per_minute": API_RATE_LIMIT_PER_MINUTE,
             "log_max_size_mb": LOG_MAX_SIZE_MB,
+            "log_retention_count": LOG_RETENTION_COUNT,
             "worker_cpu_load_limit": WORKER_CPU_LOAD_LIMIT,
             "worker_mem_limit_mb": WORKER_MEM_LIMIT_MB,
             "log_level": LOG_LEVEL,
