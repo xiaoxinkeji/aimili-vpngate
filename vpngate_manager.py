@@ -947,11 +947,11 @@ def fetch_pvl_candidates() -> list[dict[str, Any]]:
         print("[PVL] publicvpnlist_scraper 模块未加载，跳过", flush=True)
         return []
 
-    print("[PVL] 开始从 publicvpnlist.com 抓取节点...", flush=True)
+    emit("INFO", "Fetcher", "Starting PVL scrape from publicvpnlist.com")
     try:
         pvl_nodes = publicvpnlist_scraper.fetch_pvl_nodes()
     except Exception as e:
-        print(f"[PVL] 抓取失败: {e}", flush=True)
+        emit("WARN", "Fetcher", f"PVL scrape failed: {e}")
         return []
 
     if pvl_nodes:
@@ -1047,7 +1047,7 @@ def _discover_cert_templates() -> list[str]:
         emit("WARN", "Maintenance", f"Failed to persist cert templates: {e}")
     
     if len(result) > 1:
-        print(f"[证书模板] 发现 {len(result)} 套独立证书密钥组合", flush=True)
+        emit("INFO", "Maintenance", f"Discovered {len(result)} unique cert-key combinations")
         log_to_json("INFO", "Main", f"发现 {len(result)} 套独立证书密钥组合")
     return result
 
@@ -1119,7 +1119,7 @@ def _download_node_config(config_url: str, retry: int = 3, timeout: int = 10,
         return True
 
     if not _is_safe_url(config_url):
-        print(f"[config] 拒绝不安全 URL: {config_url}", flush=True)
+        emit("WARN", "Fetcher", f"Rejected unsafe config URL: {config_url}")
         return ""
 
     last_err = None
@@ -1176,7 +1176,7 @@ def _download_node_config(config_url: str, retry: int = 3, timeout: int = 10,
     if remote_host and remote_port:
         fallback = _generate_pvl_config(remote_host, remote_port, proto)
         if fallback:
-            print(f"[config] API 下载失败，使用模板生成配置: {remote_host}:{remote_port}/{proto}", flush=True)
+            emit("INFO", "Fetcher", f"API download failed, using template config for {remote_host}:{remote_port}/{proto}")
             return fallback
 
     print(f"[config] 下载失败 ({retry}次重试): {last_err}", flush=True)
@@ -6890,7 +6890,7 @@ def main() -> None:
     threading.Thread(target=proxy_server.start_proxy_server, args=(LOCAL_PROXY_HOST, LOCAL_PROXY_PORT), daemon=True).start()
     
     # Wait for the gateway to officially start
-    print("[网关] 正在启动代理网关...", flush=True)
+    emit("INFO", "Main", "Starting proxy gateway...")
     gateway_ready = False
     is_ipv6 = ":" in LOCAL_PROXY_HOST
     af = socket.AF_INET6 if is_ipv6 else socket.AF_INET
