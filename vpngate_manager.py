@@ -6059,13 +6059,16 @@ class Handler(BaseHTTPRequestHandler):
         client_ip = self.client_address[0]
         now_ts = time.time()
         window = now_ts - 60
-        # Periodic cleanup: every 10 min, purge empty entries
+        # Periodic cleanup: every 10 min, purge empty entries and stale IPs
         _last_cleanup = getattr(Handler, '_rate_limit_cleanup_at', 0.0)
         if now_ts - _last_cleanup > 600:
             with lock:
                 Handler._rate_limit_cleanup_at = now_ts
                 purged = [k for k, v in Handler._rate_limit_map.items() if not v]
                 for k in purged:
+                    del Handler._rate_limit_map[k]
+                stale = [k for k, v in Handler._rate_limit_map.items() if not [t for t in v if t > now_ts - 3600]]
+                for k in stale:
                     del Handler._rate_limit_map[k]
         with lock:
             if not hasattr(Handler, '_rate_limit_map'):
