@@ -980,8 +980,8 @@ def get_openvpn_version() -> float:
         if match:
             _openvpn_version = float(match.group(1))
             return _openvpn_version
-    except Exception:
-        pass
+    except Exception as e:
+        emit("WARN", "Fetcher", f"OpenVPN version detection failed: {e}")
     _openvpn_version = 2.4
     return _openvpn_version
 
@@ -1043,8 +1043,8 @@ def _discover_cert_templates() -> list[str]:
     try:
         tpl_path = DATA_DIR / _CERT_TEMPLATES_FILE
         write_json(str(tpl_path), {"count": len(result), "updated_at": time.time()})
-    except Exception:
-        pass
+    except Exception as e:
+        emit("WARN", "Maintenance", f"Failed to persist cert templates: {e}")
     
     if len(result) > 1:
         print(f"[证书模板] 发现 {len(result)} 套独立证书密钥组合", flush=True)
@@ -1433,8 +1433,8 @@ def setup_policy_routing(interface: str = "tun0") -> None:
         return
     try:
         subprocess.run(["ip", "rule", "del", "table", "100"], capture_output=True, timeout=2)
-    except Exception:
-        pass
+    except Exception as e:
+        emit("WARN", "VPN", f"Failed to delete ip rule table 100: {e}")
     try:
         subprocess.run(["ip", "route", "flush", "table", "100"], capture_output=True, timeout=2)
     except Exception:
@@ -1491,8 +1491,8 @@ def stop_active_openvpn() -> None:
                 path = Path(config_to_delete)
                 if path.exists():
                     path.unlink()
-            except Exception:
-                pass
+            except Exception as e:
+                emit("WARN", "VPN", f"Failed to cleanup pid file: {e}")
 
 def active_openvpn_running() -> bool:
     return active_openvpn_process is not None and active_openvpn_process.poll() is None
