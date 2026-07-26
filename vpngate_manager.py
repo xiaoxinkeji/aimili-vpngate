@@ -1296,7 +1296,7 @@ def _discover_cert_templates() -> list[str]:
     # Persist to disk
     try:
         tpl_path = DATA_DIR / _CERT_TEMPLATES_FILE
-        write_json(str(tpl_path), {"count": len(result), "updated_at": time.time()})
+        write_json(tpl_path, {"count": len(result), "updated_at": time.time()})
     except Exception as e:
         emit("WARN", "Maintenance", f"Failed to persist cert templates: {e}")
     
@@ -2336,7 +2336,18 @@ def test_multiple_nodes(node_ids: list[str]) -> list[dict[str, Any]]:
             completed_count += 1
             if res.get("probe_status") != "available":
                 unavailable_count += 1
-                
+
+            # 写入节点性能历史 (批量测试与单节点测试共用同一存储)
+            try:
+                vpn_utils.record_node_perf(
+                    nid,
+                    res.get("latency_ms", 0),
+                    res.get("probe_status", "unavailable"),
+                    res.get("probe_message", ""),
+                )
+            except Exception:
+                pass
+
             batch_buffer[nid] = res
             
             # Batch flush: write to disk every BATCH_FLUSH_SIZE results or 5 seconds
@@ -6227,9 +6238,15 @@ class Handler(BaseHTTPRequestHandler):
             return secrets.compare_digest(auth_header[7:], X_MILI_TOKEN)
         return False
 
+    # 标准基础设施探针路径: 不受动态 secret_path 前缀限制，便于 Prometheus/K8s/Docker 等
+    # 外部工具直接访问，与 do_GET 中 "无需认证" 的处理逻辑保持一致
+    PUBLIC_INFRA_PATHS = ("/health", "/ready", "/metrics", "/api/speedtest")
+
     def validate_path(self) -> str:
         secret_path = self.get_secret_path()
         request_path = urllib.parse.urlsplit(self.path).path
+        if request_path in self.PUBLIC_INFRA_PATHS:
+            return request_path
         if not secret_path:
             return request_path
         if self.is_xmili_token_valid():
