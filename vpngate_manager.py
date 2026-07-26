@@ -84,6 +84,7 @@ import dns_forwarder
 import geoip
 import webhook
 import metrics
+from scheduler import scheduler as task_scheduler
 
 try:
     import publicvpnlist_scraper
@@ -993,6 +994,45 @@ def import_backup(bundle: dict[str, Any], merge: bool = True) -> dict[str, Any]:
             save_alert_rules(alert_rules)
 
     return {"ok": True, "nodes": node_result, "alert_rules_imported": isinstance(alert_rules, list)}
+
+
+BACKUP_DIR = DATA_DIR / "backups"
+BACKUP_RETENTION_DAYS = 7
+
+
+def _scheduled_auto_backup() -> None:
+    """定时任务: 每日自动生成配置备份快照，保留最近 7 天。"""
+    BACKUP_DIR.mkdir(exist_ok=True, parents=True)
+    bundle = export_backup(include_secrets=False)
+    fname = f"auto-{time.strftime('%Y%m%d-%H%M%S')}.json"
+    write_json(BACKUP_DIR / fname, bundle)
+    cutoff = time.time() - BACKUP_RETENTION_DAYS * 86400
+    for f in BACKUP_DIR.glob("auto-*.json"):
+        try:
+            if f.stat().st_mtime < cutoff:
+                f.unlink()
+        except OSError:
+            pass
+    log_to_json("INFO", "Scheduler", f"自动备份完成: {fname}")
+
+
+def _scheduled_prune_perf_history() -> None:
+    """定时任务: 清理超过 30 天的节点性能历史记录。"""
+    history = vpn_utils.load_perf_history()
+    cutoff = time.time() - 30 * 86400
+    changed = False
+    for node_id in list(history.keys()):
+        entries = history[node_id]
+        filtered = [e for e in entries if e.get("ts", 0) >= cutoff]
+        if len(filtered) != len(entries):
+            history[node_id] = filtered
+            changed = True
+        if not filtered:
+            del history[node_id]
+            changed = True
+    if changed:
+        vpn_utils.save_perf_history(history)
+    log_to_json("DEBUG", "Scheduler", f"性能历史清理完成，剩余 {len(history)} 个节点记录")
 
 
 def mark_blacklisted(node: dict[str, Any], message: str) -> None:
@@ -6733,6 +6773,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"tags": tag_counts, "total_nodes": len(nodes)})
         elif effective_path == "/api/alert_rules":
             self.send_json({"rules": load_alert_rules()})
+        elif effective_path == "/api/scheduler":
+            self.send_json(task_scheduler.status())
         elif effective_path == "/api/backup/export":
             try:
                 bundle = export_backup(include_secrets=False)
@@ -7214,6 +7256,13 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"ok": True, **result_container})
             except Exception as e:
                 self._handle_post_error(e, "/api/nodes/discover")
+        elif effective_path.startswith("/api/scheduler/trigger/"):
+            task_name = effective_path.split("/api/scheduler/trigger/", 1)[1].strip()
+            ok = task_scheduler.trigger(task_name)
+            if ok:
+                self.send_json({"ok": True, "task": task_name})
+            else:
+                self.send_json({"ok": False, "error": "任务未找到"}, HTTPStatus.NOT_FOUND)
         elif effective_path == "/api/backup/import":
             try:
                 payload = self.read_json_body()
@@ -7551,6 +7600,10 @@ def main() -> None:
 
     httpd = DualStackHTTPServer((ui_host, ui_port), Handler)
     threading.Thread(target=_shutdown_monitor, args=(httpd,), daemon=True).start()
+
+    task_scheduler.register("auto_backup", 86400, _scheduled_auto_backup)
+    task_scheduler.register("prune_perf_history", 86400, _scheduled_prune_perf_history)
+    task_scheduler.start()
 
     webhook.notify_startup()
 
