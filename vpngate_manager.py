@@ -6618,6 +6618,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"sessions": proxy_server.get_sessions(), "stats": proxy_server._sessions.stats()})
         elif effective_path == "/api/client_limits":
             self.send_json(proxy_server.get_client_limit_status())
+        elif effective_path == "/api/client_acls":
+            self.send_json(proxy_server.get_acl_status())
         elif effective_path.startswith("/api/sessions/"):
             sid = effective_path.split("/api/sessions/", 1)[1]
             s = proxy_server.get_session(sid)

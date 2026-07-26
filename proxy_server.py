@@ -21,6 +21,38 @@ MAX_PROXY_CONNECTIONS = parse_positive_int(os.environ.get("LOCAL_PROXY_MAX_CONNE
 RELAY_BUFFER_MAX = parse_positive_int(os.environ.get("LOCAL_PROXY_RELAY_BUFFER_KB"), 256) * 1024
 proxy_connection_sem = threading.BoundedSemaphore(MAX_PROXY_CONNECTIONS)
 
+_acl_allow: list[str] = [a.strip() for a in os.environ.get("PER_CLIENT_ALLOW_IPS", "").split(",") if a.strip()]
+_acl_deny: list[str] = [a.strip() for a in os.environ.get("PER_CLIENT_DENY_IPS", "").split(",") if a.strip()]
+_acl_blocked_count: int = 0
+_acl_lock = threading.Lock()
+
+
+def _check_acl(client_ip: str) -> bool:
+    global _acl_blocked_count
+    if not _acl_allow and not _acl_deny:
+        return True
+    if _acl_allow:
+        if client_ip in _acl_allow:
+            return True
+        with _acl_lock:
+            _acl_blocked_count += 1
+        return False
+    if client_ip in _acl_deny:
+        with _acl_lock:
+            _acl_blocked_count += 1
+        return False
+    return True
+
+
+def get_acl_status() -> dict[str, Any]:
+    with _acl_lock:
+        return {
+            "allow_ips": _acl_allow,
+            "deny_ips": _acl_deny,
+            "blocked_count": _acl_blocked_count,
+            "mode": "none" if not _acl_allow and not _acl_deny else ("allowlist" if _acl_allow else "denylist"),
+        }
+
 
 class TrafficStats:
     """线程安全的代理流量统计器。"""
@@ -956,6 +988,13 @@ def http_client(client: socket.socket, first_byte: bytes) -> None:
 
 def proxy_client(client: socket.socket, address: tuple[str, int]) -> None:
     entered = False
+    client_ip = address[0]
+    if not _check_acl(client_ip):
+        try:
+            client.sendall(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
+        except OSError:
+            pass
+        return
     try:
         client.settimeout(30)
         first = recv_exact(client, 1)
