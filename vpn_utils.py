@@ -806,3 +806,6 @@ def diagnose_local_obstructions(proxy_port: int = 7928, host: str = "127.0.0.1")
                 pass
 
     return None
+
+
+# ========== 节点性能历史 ==========

@@ -1801,9 +1801,11 @@ def test_node_by_id(node_id: str) -> dict[str, Any]:
             sorted_nodes = sort_all_nodes(nodes)
             write_json(NODES_FILE, sorted_nodes)
             res = next((item for item in sorted_nodes if item.get("id") == node_id), node)
+            vpn_utils.record_node_perf(node_id, latency, "available" if ok else "unavailable", message)
             return res
         else:
-            return {}
+            vpn_utils.record_node_perf(node_id, latency, "unavailable", "节点已被移除")
+            return res
 
 def test_multiple_nodes(node_ids: list[str]) -> list[dict[str, Any]]:
     with lock:
@@ -5819,6 +5821,28 @@ class WebSocketBroadcaster:
                         pass
 
 
+# ========== API 端点限流 ==========
+RATE_LIMIT_PER_S = int(os.environ.get("LOCAL_PROXY_RATE_LIMIT_PER_S", "10"))
+RATE_LIMIT_BURST = int(os.environ.get("LOCAL_PROXY_RATE_LIMIT_BURST", "20"))
+_rate_limiter_lock = threading.Lock()
+_rate_limits: dict[str, tuple[float, float]] = {}  # path -> (tokens, last_refill)
+
+
+def _check_rate_limit(path: str) -> tuple[bool, float]:
+    """返回 (是否允许, 被限制时的等待秒数)."""
+    with _rate_limiter_lock:
+        now = time.monotonic()
+        tokens, last = _rate_limits.get(path, (float(RATE_LIMIT_BURST), now))
+        elapsed = now - last
+        tokens = min(float(RATE_LIMIT_BURST), tokens + elapsed * RATE_LIMIT_PER_S)
+        if tokens >= 1.0:
+            _rate_limits[path] = (tokens - 1.0, now)
+            return True, 0.0
+        wait = (1.0 - tokens) / RATE_LIMIT_PER_S
+        _rate_limits[path] = (tokens, now)
+        return False, wait
+
+
 class Handler(BaseHTTPRequestHandler):
     def handle_one_request(self):
         self._request_id = uuid.uuid4().hex[:12]
@@ -6152,6 +6176,11 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 self.send_json({"error": "Unauthorized"}, HTTPStatus.UNAUTHORIZED)
                 return
+
+        allowed, wait_sec = _check_rate_limit(effective_path)
+        if not allowed:
+            self.send_json({"error": "请求过于频繁", "retry_after": round(wait_sec, 1)}, HTTPStatus.TOO_MANY_REQUESTS)
+            return
                 
         if effective_path in ("/", "/index.html"):
             self.send_bytes(INDEX_HTML.encode("utf-8"), "text/html; charset=utf-8")
@@ -6361,6 +6390,27 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"username": ui_cfg.get("username", "admin")})
         elif effective_path == "/api/proxy_users":
             self.send_json({"users": proxy_server.get_users_list(), "users_file": proxy_server._users_file})
+        elif effective_path == "/api/health_full":
+            self.send_json(check_proxy_health())
+        elif effective_path.startswith("/api/node_perf/"):
+            node_id = effective_path.split("/api/node_perf/", 1)[1]
+            self.send_json(vpn_utils.get_node_perf(node_id))
+        elif effective_path == "/api/top_performers":
+            nodes = read_nodes()
+            ranked = []
+            for n in nodes:
+                nid = n.get("id", "")
+                perf = vpn_utils.get_node_perf(nid)
+                if perf.get("history_count", 0) > 0:
+                    ranked.append({**{k: n.get(k) for k in ("id", "ip", "country", "score", "latency_ms")}, "perf": perf})
+            ranked.sort(key=lambda x: x["perf"].get("success_rate", 0), reverse=True)
+            self.send_json({"top": ranked[:20]})
+        elif effective_path == "/api/rate_limits":
+            with _rate_limiter_lock:
+                self.send_json({
+                    "config": {"per_s": RATE_LIMIT_PER_S, "burst": RATE_LIMIT_BURST},
+                    "paths": {p: {"tokens": round(t, 2)} for p, (t, _) in _rate_limits.items()}
+                })
         else:
             self.send_error_json("Not found", "ERR_NOT_FOUND", HTTPStatus.NOT_FOUND)
 
