@@ -82,6 +82,7 @@ import proxy_server
 import self_update
 import dns_forwarder
 import geoip
+import webhook
 
 try:
     import publicvpnlist_scraper
@@ -202,6 +203,7 @@ X_MILI_TOKEN = os.environ.get("X_MILI_TOKEN", "")
 
 last_collector_heartbeat = 0.0
 last_checker_heartbeat = 0.0
+_last_proxy_health_state: bool | None = None
 last_pinger_heartbeat = 0.0
 server_start_time = time.time()
 
@@ -790,6 +792,7 @@ def mark_blacklisted(node: dict[str, Any], message: str) -> None:
     node_id = str(node.get("id") or "").strip()
     if not node_id:
         return
+    webhook.notify_node_blacklisted(node_id, message)
     blacklist = load_blacklist()
     now = time.time()
     blacklist[node_id] = {
@@ -1802,9 +1805,11 @@ def test_node_by_id(node_id: str) -> dict[str, Any]:
             write_json(NODES_FILE, sorted_nodes)
             res = next((item for item in sorted_nodes if item.get("id") == node_id), node)
             vpn_utils.record_node_perf(node_id, latency, "available" if ok else "unavailable", message)
+            webhook.notify_node_status(node_id, "available" if ok else "unavailable", message, latency)
             return res
         else:
             vpn_utils.record_node_perf(node_id, latency, "unavailable", "节点已被移除")
+            webhook.notify_node_status(node_id, "unavailable", "节点已被移除", latency)
             return res
 
 def test_multiple_nodes(node_ids: list[str]) -> list[dict[str, Any]]:
@@ -5686,6 +5691,7 @@ def background_proxy_checker() -> None:
                 continue
 
             res = check_proxy_health()
+            global _last_proxy_health_state
             if res["ok"]:
                 set_state(
                     proxy_ok=True,
@@ -5693,9 +5699,15 @@ def background_proxy_checker() -> None:
                     proxy_latency_ms=res["latency_ms"],
                     proxy_error=""
                 )
+                if _last_proxy_health_state is False:
+                    webhook.notify_proxy_health(True, ip=res["ip"], latency_ms=res["latency_ms"])
+                _last_proxy_health_state = True
                 log_to_json("INFO", "Proxy", f"代理可用，IP: {res['ip']}, 延迟: {res['latency_ms']} ms")
             else:
                 error_msg = res.get("error", "未知错误")
+                if _last_proxy_health_state is None or _last_proxy_health_state:
+                    webhook.notify_proxy_health(False, error=error_msg)
+                _last_proxy_health_state = False
                 if active_openvpn_node_id:
                     print(f"[警告] {LOCAL_PROXY_PORT} 端口本地代理当前不可用！原因: {error_msg}", flush=True)
                     log_to_json("WARNING", "Proxy", f"代理不可用: {error_msg}")
@@ -6411,6 +6423,8 @@ class Handler(BaseHTTPRequestHandler):
                     "config": {"per_s": RATE_LIMIT_PER_S, "burst": RATE_LIMIT_BURST},
                     "paths": {p: {"tokens": round(t, 2)} for p, (t, _) in _rate_limits.items()}
                 })
+        elif effective_path == "/api/webhook":
+            self.send_json(webhook.get_webhook_status())
         else:
             self.send_error_json("Not found", "ERR_NOT_FOUND", HTTPStatus.NOT_FOUND)
 
@@ -7129,6 +7143,8 @@ def main() -> None:
 
     httpd = DualStackHTTPServer((ui_host, ui_port), Handler)
     threading.Thread(target=_shutdown_monitor, args=(httpd,), daemon=True).start()
+
+    webhook.notify_startup()
 
     try:
         httpd.serve_forever()
