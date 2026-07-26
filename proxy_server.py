@@ -355,7 +355,7 @@ def _load_users_file() -> list[tuple[str, str]]:
         if not fpath.exists():
             return []
         mtime = fpath.stat().st_mtime
-        global _users_mtime
+        global _users_mtime, _users, _users_loaded
         if mtime == _users_mtime and _users_loaded:
             return list(_users)
         import json as _json
@@ -371,6 +371,8 @@ def _load_users_file() -> list[tuple[str, str]]:
                     entries.append((u, p))
         if entries:
             _users_mtime = mtime
+            _users = entries
+            _users_loaded = True
             print(f"[代理认证] 从 {_users_file} 加载了 {len(entries)} 个用户", flush=True)
         return entries
     except Exception as e:
@@ -396,6 +398,25 @@ def proxy_auth_enabled() -> bool:
     if _is_auth_disabled():
         return False
     return True
+
+
+def parse_http_basic_auth(lines: list[str]) -> tuple[str | None, str | None]:
+    for line in lines:
+        name, sep, value = line.partition(":")
+        if not sep or name.strip().lower() != "proxy-authorization":
+            continue
+        scheme, _, token = value.strip().partition(" ")
+        if scheme.lower() != "basic" or not token:
+            return None, None
+        try:
+            decoded = base64.b64decode(token, validate=True).decode("utf-8", errors="replace")
+        except Exception:
+            return None, None
+        username, sep, password = decoded.partition(":")
+        if not sep:
+            return None, None
+        return username, password
+    return None, None
 
 
 def _check_single_user(username: str | None, password: str | None) -> bool:
@@ -872,8 +893,10 @@ def socks5_client(client: socket.socket, first_byte: bytes) -> None:
         except Exception:
             client_addr = "unknown"
         sid = _sessions.create(client_addr, f"{host}:{port}", "socks5")
-        _counted_relay(client, upstream, sid, client_addr)
-        _sessions.close(sid)
+        try:
+            _counted_relay(client, upstream, sid, client_addr)
+        finally:
+            _sessions.close(sid)
     finally:
         client.close()
         if upstream:
@@ -930,8 +953,10 @@ def http_client(client: socket.socket, first_byte: bytes) -> None:
             except Exception:
                 client_addr = "unknown"
             sid = _sessions.create(client_addr, f"{host}:{port}", "http_connect")
-            _counted_relay(client, upstream, sid, client_addr)
-            _sessions.close(sid)
+            try:
+                _counted_relay(client, upstream, sid, client_addr)
+            finally:
+                _sessions.close(sid)
             return
 
         try:
@@ -973,8 +998,10 @@ def http_client(client: socket.socket, first_byte: bytes) -> None:
         except Exception:
             client_addr = "unknown"
         sid = _sessions.create(client_addr, f"{hostname}:{port}", "http")
-        _counted_relay(client, upstream, sid, client_addr)
-        _sessions.close(sid)
+        try:
+            _counted_relay(client, upstream, sid, client_addr)
+        finally:
+            _sessions.close(sid)
     except Exception as e:
         print(f"[HTTP 代理失败] 代理请求目标连接失败: {e}", flush=True)
         try:
