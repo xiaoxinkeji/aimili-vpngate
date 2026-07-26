@@ -158,7 +158,56 @@ get_sessions = _sessions.list_active
 get_session = _sessions.get
 
 
-def _counted_relay(left: socket.socket, right: socket.socket, session_id: str = "") -> None:
+class ClientRateLimiter:
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._buckets: dict[str, tuple[float, float, float]] = {}  # ip -> (tokens_in, tokens_out, last_refill)
+        self._limit_kbps = max(0.0, float(os.environ.get("PER_CLIENT_LIMIT_KBPS", "0")))
+        self._burst_kb = max(0.0, float(os.environ.get("PER_CLIENT_BURST_KB", "0")))
+
+    @property
+    def enabled(self) -> bool:
+        return self._limit_kbps > 0
+
+    def consume(self, client_ip: str, in_bytes: int, out_bytes: int) -> float:
+        if not self.enabled:
+            return 0.0
+        kb_total = (in_bytes + out_bytes) / 1024.0
+        now = time.monotonic()
+        with self._lock:
+            tokens, _, last = self._buckets.get(client_ip, (self._burst_kb or self._limit_kbps, 0.0, now))
+            elapsed = now - last
+            tokens = min(self._burst_kb or self._limit_kbps, tokens + elapsed * self._limit_kbps)
+            wait = max(0.0, (kb_total - tokens) / self._limit_kbps) if self._limit_kbps > 0 else 0.0
+            tokens = max(0.0, tokens - kb_total)
+            self._buckets[client_ip] = (tokens, 0.0, now)
+            return wait
+
+    def cleanup(self, max_age: float = 300.0) -> int:
+        now = time.monotonic()
+        removed = 0
+        with self._lock:
+            stale = [ip for ip, (_, _, last) in self._buckets.items() if now - last > max_age]
+            for ip in stale:
+                del self._buckets[ip]
+                removed += 1
+        return removed
+
+    def status(self) -> dict[str, Any]:
+        with self._lock:
+            return {
+                "enabled": self.enabled,
+                "limit_kbps": self._limit_kbps,
+                "burst_kb": self._burst_kb,
+                "active_clients": len(self._buckets),
+            }
+
+
+_client_limiter = ClientRateLimiter()
+get_client_limit_status = _client_limiter.status
+
+
+def _counted_relay(left: socket.socket, right: socket.socket, session_id: str = "", client_ip: str = "") -> None:
     """带流量统计的数据中继，行为同 relay()。"""
     left.setblocking(False)
     right.setblocking(False)
@@ -206,6 +255,12 @@ def _counted_relay(left: socket.socket, right: socket.socket, session_id: str = 
                         in_bytes += len(data)
                     else:
                         out_bytes += len(data)
+                    if client_ip and _client_limiter.enabled and in_bytes + out_bytes >= 65536:
+                        wait = _client_limiter.consume(client_ip, in_bytes, out_bytes)
+                        in_bytes = 0
+                        out_bytes = 0
+                        if wait > 0:
+                            time.sleep(min(wait, 1.0))
                 except (BlockingIOError, InterruptedError):
                     pass
                 except OSError:
@@ -785,7 +840,7 @@ def socks5_client(client: socket.socket, first_byte: bytes) -> None:
         except Exception:
             client_addr = "unknown"
         sid = _sessions.create(client_addr, f"{host}:{port}", "socks5")
-        _counted_relay(client, upstream, sid)
+        _counted_relay(client, upstream, sid, client_addr)
         _sessions.close(sid)
     finally:
         client.close()
@@ -794,7 +849,7 @@ def socks5_client(client: socket.socket, first_byte: bytes) -> None:
         if udp_relay_sock:
             try:
                 udp_relay_sock.close()
-            except Exception:
+            except OSError:
                 pass
 
 def read_http_header(client: socket.socket, first_byte: bytes) -> bytes:
@@ -843,7 +898,7 @@ def http_client(client: socket.socket, first_byte: bytes) -> None:
             except Exception:
                 client_addr = "unknown"
             sid = _sessions.create(client_addr, f"{host}:{port}", "http_connect")
-            _counted_relay(client, upstream, sid)
+            _counted_relay(client, upstream, sid, client_addr)
             _sessions.close(sid)
             return
 
@@ -886,7 +941,7 @@ def http_client(client: socket.socket, first_byte: bytes) -> None:
         except Exception:
             client_addr = "unknown"
         sid = _sessions.create(client_addr, f"{hostname}:{port}", "http")
-        _counted_relay(client, upstream, sid)
+        _counted_relay(client, upstream, sid, client_addr)
         _sessions.close(sid)
     except Exception as e:
         print(f"[HTTP 代理失败] 代理请求目标连接失败: {e}", flush=True)

@@ -5777,6 +5777,10 @@ def check_proxy_health() -> dict[str, Any]:
                 cleaned = proxy_server._sessions.cleanup(max_age=600)
                 if cleaned:
                     log_to_json("DEBUG", "Session", f"清理了 {cleaned} 个过期会话")
+                # 清理过期限流器客户端
+                cleaned_limiter = proxy_server._client_limiter.cleanup(max_age=300)
+                if cleaned_limiter:
+                    log_to_json("DEBUG", "RateLimit", f"清理了 {cleaned_limiter} 个过期限流记录")
 
                 global _last_proxy_health_state
                 res = check_proxy_health()
@@ -6522,6 +6526,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(webhook.get_webhook_status())
         elif effective_path == "/api/sessions":
             self.send_json({"sessions": proxy_server.get_sessions(), "stats": proxy_server._sessions.stats()})
+        elif effective_path == "/api/client_limits":
+            self.send_json(proxy_server.get_client_limit_status())
         elif effective_path.startswith("/api/sessions/"):
             sid = effective_path.split("/api/sessions/", 1)[1]
             s = proxy_server.get_session(sid)
