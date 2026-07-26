@@ -310,7 +310,8 @@ def load_ui_config() -> dict[str, Any]:
             "connection_enabled": True,
             "fixed_node_id": "",
             "favorite_node_ids": [],
-            "fav_fail_fallback": False
+            "fav_fail_fallback": False,
+            "routing_strategy": "best"
         }
         updated = False
         if auth_file.exists():
@@ -318,7 +319,7 @@ def load_ui_config() -> dict[str, Any]:
                 data = json.loads(auth_file.read_text(encoding="utf-8"))
                 for key, val in data.items():
                     config[key] = val
-                for key in ["host", "port", "proxy_port", "routing_mode", "force_country", "routing_ip_type", "connection_enabled", "fixed_node_id", "favorite_node_ids", "fav_fail_fallback"]:
+                for key in ["host", "port", "proxy_port", "routing_mode", "force_country", "routing_ip_type", "connection_enabled", "fixed_node_id", "favorite_node_ids", "fav_fail_fallback", "routing_strategy"]:
                     if key not in data:
                         updated = True
             except Exception:
@@ -1802,6 +1803,51 @@ def apply_routing_filters(
 
     return candidates
 
+
+def select_node_weighted(candidates: list[dict[str, Any]], top_n: int = 5) -> dict[str, Any] | None:
+    """基于延迟、评分、历史成功率的加权随机选择，用于负载分散避免固定压向单一最佳节点。"""
+    if not candidates:
+        return None
+    import random as _random
+
+    scored: list[tuple[float, dict[str, Any]]] = []
+    for n in candidates:
+        latency = parse_int(n.get("latency_ms")) or 999999
+        score = parse_int(n.get("score")) or 0
+        perf = vpn_utils.get_node_perf(str(n.get("id", "")))
+        success_rate = perf.get("success_rate", 1.0) if perf.get("history_count", 0) > 0 else 1.0
+        # 延迟越低、评分越高、历史成功率越高 -> 权重越大
+        latency_factor = 1000.0 / max(latency, 10)
+        weight = latency_factor * (1 + score / 100.0) * max(success_rate, 0.1)
+        scored.append((weight, n))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    top_candidates = scored[:top_n]
+    total_weight = sum(w for w, _ in top_candidates)
+    if total_weight <= 0:
+        return top_candidates[0][1]
+    r = _random.uniform(0, total_weight)
+    upto = 0.0
+    for w, n in top_candidates:
+        upto += w
+        if upto >= r:
+            return n
+    return top_candidates[0][1]
+
+
+def select_best_node(candidates: list[dict[str, Any]], strategy: str = "best") -> dict[str, Any] | None:
+    """根据路由策略选择下一个节点: best=延迟最低优先, weighted=加权随机分散负载。"""
+    if not candidates:
+        return None
+    if strategy == "weighted":
+        return select_node_weighted(candidates)
+    sorted_candidates = sorted(
+        candidates,
+        key=lambda n: (parse_int(n.get("latency_ms")) or 999999, -parse_int(n.get("score")))
+    )
+    return sorted_candidates[0]
+
+
 def normalized_country_name(country: Any) -> str:
     value = str(country or "").strip()
     return vpn_utils.COUNTRY_TRANSLATIONS.get(value, value)
@@ -2374,11 +2420,10 @@ def auto_switch_node(attempt: int = 0) -> None:
             and not n.get("active")
         ]
         candidates = apply_routing_filters(candidates, ui_cfg)
-            
-        candidates.sort(key=lambda n: (parse_int(n.get("latency_ms")) or 999999, -parse_int(n.get("score"))))
-        
-    if candidates:
-        next_node = candidates[0]
+        routing_strategy = ui_cfg.get("routing_strategy", "best")
+
+    next_node = select_best_node(candidates, routing_strategy) if candidates else None
+    if next_node:
         msg = f"当前连接已失效或代理连通性检测失败，正在自动切换至最佳备用节点: {next_node['id']}"
         emit("INFO", "VPN", msg)
         try:
@@ -6988,6 +7033,7 @@ class Handler(BaseHTTPRequestHandler):
                 routing_mode = str(payload.get("routing_mode") or "auto").strip()
                 force_country = str(payload.get("force_country") or "").strip()
                 routing_ip_type = str(payload.get("routing_ip_type") or "all").strip()
+                routing_strategy = str(payload.get("routing_strategy") or "best").strip()
                 fav_fail_fallback = False
                 
                 if routing_mode not in ("auto", "fixed_ip", "fixed_region", "favorites"):
@@ -6999,6 +7045,9 @@ class Handler(BaseHTTPRequestHandler):
                 if routing_ip_type not in ("all", "residential", "hosting"):
                     self.send_json({"ok": False, "error": "无效的IP出站类型过滤"}, HTTPStatus.BAD_REQUEST)
                     return
+                if routing_strategy not in ("best", "weighted"):
+                    self.send_json({"ok": False, "error": "无效的路由选择策略"}, HTTPStatus.BAD_REQUEST)
+                    return
                 
                 ui_cfg = load_ui_config()
                 fixed_node_id = current_fixed_node_id(ui_cfg) if routing_mode == "fixed_ip" else ""
@@ -7009,6 +7058,7 @@ class Handler(BaseHTTPRequestHandler):
                 ui_cfg["routing_mode"] = routing_mode
                 ui_cfg["force_country"] = force_country
                 ui_cfg["routing_ip_type"] = routing_ip_type
+                ui_cfg["routing_strategy"] = routing_strategy
                 ui_cfg["fav_fail_fallback"] = fav_fail_fallback
                 if routing_mode == "fixed_ip":
                     ui_cfg["fixed_node_id"] = fixed_node_id
