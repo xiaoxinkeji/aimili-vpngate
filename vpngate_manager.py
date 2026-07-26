@@ -2542,6 +2542,7 @@ def maintain_valid_nodes(force: bool = False) -> str:
                     new_count = 0
                     for pn in pvl_candidates:
                         if pn["id"] not in pvl_ids:
+                            pn.setdefault("tags", ["auto-discovered"])
                             current.append(pn)
                             pvl_ids.add(pn["id"])
                             new_count += 1
@@ -2599,6 +2600,7 @@ def maintain_valid_nodes(force: bool = False) -> str:
                 
             merged: list[dict[str, Any]] = []
             seen_ids: set[str] = set()
+            seen_ips: set[str] = set()
             
             if active_node:
                 merged.append(active_node)
@@ -2606,8 +2608,13 @@ def maintain_valid_nodes(force: bool = False) -> str:
                 
             for cand in candidates:
                 if cand["id"] not in seen_ids:
+                    cand_ip = str(cand.get("ip") or cand.get("remote_host") or "")
+                    if cand_ip and cand_ip in seen_ips:
+                        continue
                     previous = current_by_id.get(str(cand["id"]))
-                    if previous:
+                    if not previous:
+                        cand.setdefault("tags", ["auto-discovered"])
+                    else:
                         for key in [
                             "probe_status",
                             "probe_message",
@@ -2624,6 +2631,8 @@ def maintain_valid_nodes(force: bool = False) -> str:
                                 cand[key] = previous.get(key)
                     merged.append(cand)
                     seen_ids.add(cand["id"])
+                    if cand_ip:
+                        seen_ips.add(cand_ip)
                     
             if len(merged) > 1000:
                 merged = merged[:1000]
@@ -7103,6 +7112,41 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"ok": True, "rules": valid_rules})
             except Exception as e:
                 self._handle_post_error(e, "/api/alert_rules")
+        elif effective_path == "/api/nodes/discover":
+            try:
+                import threading as _thr
+                result_container: dict[str, Any] = {}
+                def _bg_discover():
+                    try:
+                        candidates = fetch_candidates()
+                        if not candidates:
+                            pvl = fetch_pvl_candidates()
+                            if pvl:
+                                with lock:
+                                    cur = read_nodes()
+                                    pvl_ids = {str(c["id"]) for c in cur if c.get("id")}
+                                    added = 0
+                                    for pn in pvl:
+                                        if pn["id"] not in pvl_ids:
+                                            pn.setdefault("tags", ["auto-discovered"])
+                                            cur.append(pn)
+                                            pvl_ids.add(pn["id"])
+                                            added += 1
+                                    if added:
+                                        write_json(NODES_FILE, cur)
+                                result_container["added"] = added
+                                result_container["total"] = len(cur)
+                            result_container["candidates"] = 0
+                        else:
+                            result_container["candidates"] = len(candidates)
+                    except Exception as ex:
+                        result_container["error"] = str(ex)
+                t = _thr.Thread(target=_bg_discover, daemon=True)
+                t.start()
+                t.join(timeout=60)
+                self.send_json({"ok": True, **result_container})
+            except Exception as e:
+                self._handle_post_error(e, "/api/nodes/discover")
         else:
             self.send_error_json("Not found", "ERR_NOT_FOUND", HTTPStatus.NOT_FOUND)
 
