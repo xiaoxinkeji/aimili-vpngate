@@ -5680,68 +5680,73 @@ def check_proxy_health() -> dict[str, Any]:
     except Exception as e:
         return {"ok": False, "error": f"出口连接测试异常: {e}"}
 
-def background_proxy_checker() -> None:
-    global last_checker_heartbeat, is_connecting
-    time.sleep(30)
-    while True:
-        last_checker_heartbeat = time.time()
-        try:
-            if is_connecting:
-                time.sleep(5)
-                continue
-
-            res = check_proxy_health()
-            global _last_proxy_health_state
-            if res["ok"]:
-                set_state(
-                    proxy_ok=True,
-                    proxy_ip=res["ip"],
-                    proxy_latency_ms=res["latency_ms"],
-                    proxy_error=""
-                )
-                if _last_proxy_health_state is False:
-                    webhook.notify_proxy_health(True, ip=res["ip"], latency_ms=res["latency_ms"])
-                _last_proxy_health_state = True
-                log_to_json("INFO", "Proxy", f"代理可用，IP: {res['ip']}, 延迟: {res['latency_ms']} ms")
-            else:
-                error_msg = res.get("error", "未知错误")
-                if _last_proxy_health_state is None or _last_proxy_health_state:
-                    webhook.notify_proxy_health(False, error=error_msg)
-                _last_proxy_health_state = False
-                if active_openvpn_node_id:
-                    print(f"[警告] {LOCAL_PROXY_PORT} 端口本地代理当前不可用！原因: {error_msg}", flush=True)
-                    log_to_json("WARNING", "Proxy", f"代理不可用: {error_msg}")
-                set_state(
-                    proxy_ok=False,
-                    proxy_ip="-",
-                    proxy_latency_ms=0,
-                    proxy_error=error_msg
-                )
-
-                # If we intended to have an active VPN node but proxy failed, trigger auto-switch
-                if active_openvpn_node_id:
-                    ui_cfg = load_ui_config()
-                    routing_mode = ui_cfg.get("routing_mode", "auto")
-                    if routing_mode != "fixed_ip":
-                        with lock:
-                            nodes = read_nodes()
-                            active_node = next((n for n in nodes if n.get("id") == active_openvpn_node_id), None)
-                            if active_node:
-                                mark_blacklisted(active_node, f"代理连通性检测失败: {error_msg}")
-                                active_node["probe_status"] = "unavailable"
-                                write_json(NODES_FILE, nodes)
-                        auto_switch_node()
-                    else:
-                        print(f"[代理守护线程] 固定 IP 模式下代理不可用，正在尝试重启连接同一节点: {active_openvpn_node_id}", flush=True)
-                        is_connecting = False
-                        try:
-                            connect_node(active_openvpn_node_id)
-                        except Exception as e:
-                            print(f"[代理守护线程] 重启固定节点失败: {e}", flush=True)
-        except Exception as e:
-            print(f"[错误] 代理后台检测发生异常: {e}", flush=True)
-            log_to_json("ERROR", "Proxy", f"检测守护线程发生异常: {e}")
+    def background_proxy_checker() -> None:
+        global last_checker_heartbeat, is_connecting
         time.sleep(30)
+        while True:
+            last_checker_heartbeat = time.time()
+            try:
+                if is_connecting:
+                    time.sleep(5)
+                    continue
+
+                # 清理过期会话
+                cleaned = proxy_server._sessions.cleanup(max_age=600)
+                if cleaned:
+                    log_to_json("DEBUG", "Session", f"清理了 {cleaned} 个过期会话")
+
+                global _last_proxy_health_state
+                res = check_proxy_health()
+                if res["ok"]:
+                    set_state(
+                        proxy_ok=True,
+                        proxy_ip=res["ip"],
+                        proxy_latency_ms=res["latency_ms"],
+                        proxy_error=""
+                    )
+                    if _last_proxy_health_state is False:
+                        webhook.notify_proxy_health(True, ip=res["ip"], latency_ms=res["latency_ms"])
+                    _last_proxy_health_state = True
+                    log_to_json("INFO", "Proxy", f"代理可用，IP: {res['ip']}, 延迟: {res['latency_ms']} ms")
+                else:
+                    error_msg = res.get("error", "未知错误")
+                    if _last_proxy_health_state is None or _last_proxy_health_state:
+                        webhook.notify_proxy_health(False, error=error_msg)
+                    _last_proxy_health_state = False
+                    if active_openvpn_node_id:
+                        print(f"[警告] {LOCAL_PROXY_PORT} 端口本地代理当前不可用！原因: {error_msg}", flush=True)
+                        log_to_json("WARNING", "Proxy", f"代理不可用: {error_msg}")
+                    set_state(
+                        proxy_ok=False,
+                        proxy_ip="-",
+                        proxy_latency_ms=0,
+                        proxy_error=error_msg
+                    )
+
+                    # If we intended to have an active VPN node but proxy failed, trigger auto-switch
+                    if active_openvpn_node_id:
+                        ui_cfg = load_ui_config()
+                        routing_mode = ui_cfg.get("routing_mode", "auto")
+                        if routing_mode != "fixed_ip":
+                            with lock:
+                                nodes = read_nodes()
+                                active_node = next((n for n in nodes if n.get("id") == active_openvpn_node_id), None)
+                                if active_node:
+                                    mark_blacklisted(active_node, f"代理连通性检测失败: {error_msg}")
+                                    active_node["probe_status"] = "unavailable"
+                                    write_json(NODES_FILE, nodes)
+                            auto_switch_node()
+                        else:
+                            print(f"[代理守护线程] 固定 IP 模式下代理不可用，正在尝试重启连接同一节点: {active_openvpn_node_id}", flush=True)
+                            is_connecting = False
+                            try:
+                                connect_node(active_openvpn_node_id)
+                            except Exception as e:
+                                print(f"[代理守护线程] 重启固定节点失败: {e}", flush=True)
+            except Exception as e:
+                print(f"[错误] 代理后台检测发生异常: {e}", flush=True)
+                log_to_json("ERROR", "Proxy", f"检测守护线程发生异常: {e}")
+            time.sleep(30)
 
 def active_node_pinger() -> None:
     global last_pinger_heartbeat
@@ -6425,6 +6430,15 @@ class Handler(BaseHTTPRequestHandler):
                 })
         elif effective_path == "/api/webhook":
             self.send_json(webhook.get_webhook_status())
+        elif effective_path == "/api/sessions":
+            self.send_json({"sessions": proxy_server.get_sessions(), "stats": proxy_server._sessions.stats()})
+        elif effective_path.startswith("/api/sessions/"):
+            sid = effective_path.split("/api/sessions/", 1)[1]
+            s = proxy_server.get_session(sid)
+            if s:
+                self.send_json(s)
+            else:
+                self.send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
         else:
             self.send_error_json("Not found", "ERR_NOT_FOUND", HTTPStatus.NOT_FOUND)
 

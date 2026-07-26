@@ -88,7 +88,77 @@ _traffic = TrafficStats()
 get_traffic_stats = _traffic.snapshot
 
 
-def _counted_relay(left: socket.socket, right: socket.socket) -> None:
+class SessionTracker:
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._sessions: dict[str, dict[str, Any]] = {}
+        self._counter: int = 0
+
+    def create(self, src_ip: str, target: str, protocol: str) -> str:
+        sid = f"s{int(time.time()*1000):x}-{self._counter:x}"
+        self._counter += 1
+        entry: dict[str, Any] = {
+            "id": sid,
+            "src_ip": src_ip,
+            "target": target,
+            "protocol": protocol,
+            "started_at": time.time(),
+            "bytes_in": 0,
+            "bytes_out": 0,
+            "alive": True,
+        }
+        with self._lock:
+            self._sessions[sid] = entry
+        _traffic.add_connection()
+        return sid
+
+    def add_bytes(self, sid: str, in_bytes: int, out_bytes: int) -> None:
+        with self._lock:
+            s = self._sessions.get(sid)
+            if s:
+                s["bytes_in"] += in_bytes
+                s["bytes_out"] += out_bytes
+
+    def close(self, sid: str) -> None:
+        with self._lock:
+            s = self._sessions.get(sid)
+            if s:
+                s["alive"] = False
+                s["ended_at"] = time.time()
+        _traffic.remove_connection()
+
+    def list_active(self) -> list[dict[str, Any]]:
+        with self._lock:
+            return [s for s in self._sessions.values() if s["alive"]]
+
+    def get(self, sid: str) -> dict[str, Any] | None:
+        with self._lock:
+            return self._sessions.get(sid)
+
+    def cleanup(self, max_age: float = 3600.0) -> int:
+        now = time.time()
+        removed = 0
+        with self._lock:
+            stale = [sid for sid, s in self._sessions.items()
+                     if not s["alive"] and now - s.get("ended_at", now) > max_age]
+            for sid in stale:
+                del self._sessions[sid]
+                removed += 1
+        return removed
+
+    def stats(self) -> dict[str, Any]:
+        with self._lock:
+            alive = sum(1 for s in self._sessions.values() if s["alive"])
+            total = len(self._sessions)
+        return {"active": alive, "total": total}
+
+
+_sessions = SessionTracker()
+get_sessions = _sessions.list_active
+get_session = _sessions.get
+
+
+def _counted_relay(left: socket.socket, right: socket.socket, session_id: str = "") -> None:
     """带流量统计的数据中继，行为同 relay()。"""
     left.setblocking(False)
     right.setblocking(False)
@@ -96,7 +166,6 @@ def _counted_relay(left: socket.socket, right: socket.socket) -> None:
     write_bufs: dict[socket.socket, bytearray] = {}
     in_bytes = 0
     out_bytes = 0
-    _traffic.add_connection()
     try:
         while True:
             read_list = [s for s in sockets if s not in write_bufs or len(write_bufs[s]) < RELAY_BUFFER_MAX]
@@ -128,6 +197,8 @@ def _counted_relay(left: socket.socket, right: socket.socket) -> None:
                     data = sock.recv(65536)
                     if not data:
                         _traffic.add_bytes(in_bytes, out_bytes)
+                        if session_id:
+                            _sessions.add_bytes(session_id, in_bytes, out_bytes)
                         return
                     target_buf = write_bufs.setdefault(other, bytearray())
                     target_buf.extend(data)
@@ -139,9 +210,11 @@ def _counted_relay(left: socket.socket, right: socket.socket) -> None:
                     pass
                 except OSError:
                     _traffic.add_bytes(in_bytes, out_bytes)
+                    if session_id:
+                        _sessions.add_bytes(session_id, in_bytes, out_bytes)
                     return
     finally:
-        _traffic.remove_connection()
+        pass
 
 def parse_int(value: Any) -> int:
     try:
@@ -707,7 +780,13 @@ def socks5_client(client: socket.socket, first_byte: bytes) -> None:
                 pass
             raise
         client.sendall(b"\x05\x00\x00\x01\x00\x00\x00\x00\x00\x00")
-        _counted_relay(client, upstream)
+        try:
+            client_addr = client.getpeername()[0]
+        except Exception:
+            client_addr = "unknown"
+        sid = _sessions.create(client_addr, f"{host}:{port}", "socks5")
+        _counted_relay(client, upstream, sid)
+        _sessions.close(sid)
     finally:
         client.close()
         if upstream:
@@ -759,7 +838,13 @@ def http_client(client: socket.socket, first_byte: bytes) -> None:
             client.sendall(b"HTTP/1.1 200 Connection Established\r\n\r\n")
             if rest:
                 upstream.sendall(rest)
-            _counted_relay(client, upstream)
+            try:
+                client_addr = client.getpeername()[0]
+            except Exception:
+                client_addr = "unknown"
+            sid = _sessions.create(client_addr, f"{host}:{port}", "http_connect")
+            _counted_relay(client, upstream, sid)
+            _sessions.close(sid)
             return
 
         try:
@@ -796,7 +881,13 @@ def http_client(client: socket.socket, first_byte: bytes) -> None:
         request = f"{method} {path} {version}\r\n" + "\r\n".join(headers) + "\r\nConnection: close\r\n\r\n"
         upstream = create_connection((hostname, port), timeout=20)
         upstream.sendall(request.encode("iso-8859-1") + rest)
-        _counted_relay(client, upstream)
+        try:
+            client_addr = client.getpeername()[0]
+        except Exception:
+            client_addr = "unknown"
+        sid = _sessions.create(client_addr, f"{hostname}:{port}", "http")
+        _counted_relay(client, upstream, sid)
+        _sessions.close(sid)
     except Exception as e:
         print(f"[HTTP 代理失败] 代理请求目标连接失败: {e}", flush=True)
         try:
