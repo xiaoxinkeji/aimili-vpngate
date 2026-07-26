@@ -937,6 +937,64 @@ def evaluate_alert_rules() -> None:
             webhook.enqueue("alert.triggered", details={"rule": name, "message": msg})
 
 
+BACKUP_FORMAT_VERSION = 1
+
+
+def export_backup(include_secrets: bool = False) -> dict[str, Any]:
+    """导出完整配置备份 (节点、UI 配置、告警规则)。"""
+    nodes = read_nodes()
+    exported_nodes = []
+    for n in nodes:
+        item = {k: v for k, v in n.items() if k != "config_text"}
+        exported_nodes.append(item)
+
+    ui_cfg = load_ui_config()
+    exported_ui = {k: v for k, v in ui_cfg.items() if k != "password" or include_secrets}
+
+    return {
+        "backup_version": BACKUP_FORMAT_VERSION,
+        "exported_at": time.time(),
+        "exported_at_iso": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "nodes": exported_nodes,
+        "ui_config": exported_ui,
+        "alert_rules": load_alert_rules(),
+        "node_count": len(exported_nodes),
+    }
+
+
+def import_backup(bundle: dict[str, Any], merge: bool = True) -> dict[str, Any]:
+    """导入配置备份。merge=True 时与现有节点合并去重，False 时完全替换。"""
+    if not isinstance(bundle, dict) or "nodes" not in bundle:
+        raise ValueError("备份文件格式无效，缺少 nodes 字段")
+
+    imported_nodes = bundle.get("nodes", [])
+    if not isinstance(imported_nodes, list):
+        raise ValueError("备份文件中 nodes 字段必须是数组")
+
+    with lock:
+        if merge:
+            current = read_nodes()
+            existing_ids = {str(n.get("id")) for n in current if n.get("id")}
+            added = 0
+            for n in imported_nodes:
+                if isinstance(n, dict) and n.get("id") and str(n["id"]) not in existing_ids:
+                    current.append(n)
+                    existing_ids.add(str(n["id"]))
+                    added += 1
+            write_json(NODES_FILE, current)
+            node_result = {"added": added, "total": len(current)}
+        else:
+            valid_nodes = [n for n in imported_nodes if isinstance(n, dict) and n.get("id")]
+            write_json(NODES_FILE, valid_nodes)
+            node_result = {"replaced": len(valid_nodes), "total": len(valid_nodes)}
+
+        alert_rules = bundle.get("alert_rules")
+        if isinstance(alert_rules, list):
+            save_alert_rules(alert_rules)
+
+    return {"ok": True, "nodes": node_result, "alert_rules_imported": isinstance(alert_rules, list)}
+
+
 def mark_blacklisted(node: dict[str, Any], message: str) -> None:
     node_id = str(node.get("id") or "").strip()
     if not node_id:
@@ -6675,6 +6733,15 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"tags": tag_counts, "total_nodes": len(nodes)})
         elif effective_path == "/api/alert_rules":
             self.send_json({"rules": load_alert_rules()})
+        elif effective_path == "/api/backup/export":
+            try:
+                bundle = export_backup(include_secrets=False)
+                filename = f"aimili-backup-{time.strftime('%Y%m%d-%H%M%S')}.json"
+                self.send_json(bundle, HTTPStatus.OK, {
+                    "Content-Disposition": f'attachment; filename="{filename}"'
+                })
+            except Exception as e:
+                self.send_json({"error": str(e)}, HTTPStatus.INTERNAL_SERVER_ERROR)
         else:
             self.send_error_json("Not found", "ERR_NOT_FOUND", HTTPStatus.NOT_FOUND)
 
@@ -7147,6 +7214,18 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"ok": True, **result_container})
             except Exception as e:
                 self._handle_post_error(e, "/api/nodes/discover")
+        elif effective_path == "/api/backup/import":
+            try:
+                payload = self.read_json_body()
+                merge = bool(payload.get("merge", True))
+                bundle = payload.get("bundle", payload)
+                result = import_backup(bundle, merge=merge)
+                log_to_json("INFO", "Backup", f"配置备份导入完成: {result}")
+                self.send_json(result)
+            except ValueError as ve:
+                self.send_json({"ok": False, "error": str(ve)}, HTTPStatus.BAD_REQUEST)
+            except Exception as e:
+                self._handle_post_error(e, "/api/backup/import")
         else:
             self.send_error_json("Not found", "ERR_NOT_FOUND", HTTPStatus.NOT_FOUND)
 
