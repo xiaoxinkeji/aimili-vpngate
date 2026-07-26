@@ -6356,6 +6356,11 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(geoip.get_stats())
         elif effective_path == "/api/traffic":
             self.send_json(proxy_server.get_traffic_stats())
+        elif effective_path == "/api/profile":
+            ui_cfg = load_ui_config()
+            self.send_json({"username": ui_cfg.get("username", "admin")})
+        elif effective_path == "/api/proxy_users":
+            self.send_json({"users": proxy_server.get_users_list(), "users_file": proxy_server._users_file})
         else:
             self.send_error_json("Not found", "ERR_NOT_FOUND", HTTPStatus.NOT_FOUND)
 

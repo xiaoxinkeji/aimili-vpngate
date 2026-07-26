@@ -8,6 +8,7 @@ import socket
 import threading
 import urllib.parse
 import time
+from pathlib import Path
 from typing import Any
 
 def parse_positive_int(value: str | None, default: int) -> int:
@@ -173,45 +174,107 @@ def parse_host_port(authority: str, default_port: int) -> tuple[str, int]:
     return authority, default_port
 
 _cached_credentials: list[tuple[str | None, str | None] | None] = [None]
+_users: list[tuple[str, str]] = []
+_users_lock = threading.Lock()
+_users_file = os.environ.get("LOCAL_PROXY_USERS_FILE", "")
+_users_mtime: float = 0.0
+_users_loaded: bool = False
+
+
+def _is_auth_disabled() -> bool:
+    user = os.environ.get("LOCAL_PROXY_USER") or os.environ.get("LOCAL_PROXY_USERNAME")
+    password = os.environ.get("LOCAL_PROXY_PASS") or os.environ.get("LOCAL_PROXY_PASSWORD")
+    return user is None and password is None and not _users_file
+
+
+def _load_users_file() -> list[tuple[str, str]]:
+    if not _users_file:
+        return []
+    try:
+        fpath = Path(_users_file)
+        if not fpath.exists():
+            return []
+        mtime = fpath.stat().st_mtime
+        global _users_mtime
+        if mtime == _users_mtime and _users_loaded:
+            return list(_users)
+        import json as _json
+        data = _json.loads(fpath.read_text(encoding="utf-8"))
+        if not isinstance(data, list):
+            return []
+        entries: list[tuple[str, str]] = []
+        for item in data:
+            if isinstance(item, dict):
+                u = str(item.get("username", "")).strip()
+                p = str(item.get("password", "")).strip()
+                if u and p:
+                    entries.append((u, p))
+        if entries:
+            _users_mtime = mtime
+            print(f"[代理认证] 从 {_users_file} 加载了 {len(entries)} 个用户", flush=True)
+        return entries
+    except Exception as e:
+        print(f"[代理认证] 加载用户文件失败 ({_users_file}): {e}", flush=True)
+        return []
+
 
 def get_proxy_credentials() -> tuple[str | None, str | None]:
     if _cached_credentials[0] is not None:
         return _cached_credentials[0]
     user = os.environ.get("LOCAL_PROXY_USER") or os.environ.get("LOCAL_PROXY_USERNAME")
     password = os.environ.get("LOCAL_PROXY_PASS") or os.environ.get("LOCAL_PROXY_PASSWORD")
-    if user is None and password is None:
+    if user is None and password is None and not _users_file:
         _cached_credentials[0] = (None, None)
-    else:
+    elif user is not None or password is not None:
         _cached_credentials[0] = (user or "", password or "")
+    else:
+        _cached_credentials[0] = ("__file__", "__file__")
     return _cached_credentials[0]
 
+
 def proxy_auth_enabled() -> bool:
-    user, password = get_proxy_credentials()
-    return user is not None and password is not None
+    if _is_auth_disabled():
+        return False
+    return True
 
-def parse_http_basic_auth(lines: list[str]) -> tuple[str | None, str | None]:
-    for line in lines:
-        name, sep, value = line.partition(":")
-        if not sep or name.strip().lower() != "proxy-authorization":
-            continue
-        scheme, _, token = value.strip().partition(" ")
-        if scheme.lower() != "basic" or not token:
-            return None, None
-        try:
-            decoded = base64.b64decode(token, validate=True).decode("utf-8", errors="replace")
-        except Exception:
-            return None, None
-        username, sep, password = decoded.partition(":")
-        if not sep:
-            return None, None
-        return username, password
-    return None, None
 
-def check_credentials(username: str | None, password: str | None) -> bool:
+def _check_single_user(username: str | None, password: str | None) -> bool:
     expected_user, expected_pass = get_proxy_credentials()
     if expected_user is None or expected_pass is None:
         return True
+    if expected_user == "__file__":
+        return False
     return secrets.compare_digest(username or "", expected_user) and secrets.compare_digest(password or "", expected_pass)
+
+
+def check_credentials(username: str | None, password: str | None) -> bool:
+    if _is_auth_disabled():
+        return True
+
+    if _check_single_user(username, password):
+        return True
+
+    entries = _load_users_file()
+    if entries:
+        u = username or ""
+        p = password or ""
+        for stored_u, stored_p in entries:
+            if secrets.compare_digest(u, stored_u) and secrets.compare_digest(p, stored_p):
+                return True
+
+    return False
+
+
+def get_users_list() -> list[dict[str, str]]:
+    """获取所有用户列表 (不含密码)。"""
+    result: list[dict[str, str]] = []
+    env_user = os.environ.get("LOCAL_PROXY_USER") or os.environ.get("LOCAL_PROXY_USERNAME")
+    if env_user:
+        result.append({"username": env_user, "source": "env"})
+    for u, _ in _load_users_file():
+        if not any(r["username"] == u for r in result):
+            result.append({"username": u, "source": "file"})
+    return result
 
 def dns_query_over_tun0(host: str, qtype: int, dns_server: str, timeout: float) -> str | None:
     import random
