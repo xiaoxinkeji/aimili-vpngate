@@ -6319,11 +6319,18 @@ class Handler(BaseHTTPRequestHandler):
                         del stripped["config_text"]
                     stripped_nodes.append(stripped)
                 
-                # Pagination support: ?offset=N&limit=M
+                # Pagination + Tag filtering
                 parsed = urllib.parse.urlparse(self.path)
                 params = urllib.parse.parse_qs(parsed.query)
                 offset = parse_int(params.get("offset", [0])[0])
                 limit = parse_int(params.get("limit", [0])[0])
+                tag_filter = params.get("tag", [None])[0]
+                if tag_filter:
+                    tag_filter = str(tag_filter).strip().lower()
+                    stripped_nodes = [
+                        n for n in stripped_nodes
+                        if tag_filter in [t.lower() for t in (n.get("tags") or [])]
+                    ]
                 total = len(stripped_nodes)
                 if offset < 0:
                     offset = 0
@@ -6552,6 +6559,13 @@ class Handler(BaseHTTPRequestHandler):
             except (ValueError, TypeError):
                 days = 7
             self.send_json(query_log_stats(days))
+        elif effective_path == "/api/tags":
+            nodes = read_nodes()
+            tag_counts: dict[str, int] = {}
+            for n in nodes:
+                for t in (n.get("tags") or []):
+                    tag_counts[t] = tag_counts.get(t, 0) + 1
+            self.send_json({"tags": tag_counts, "total_nodes": len(nodes)})
         else:
             self.send_error_json("Not found", "ERR_NOT_FOUND", HTTPStatus.NOT_FOUND)
 
@@ -6945,6 +6959,29 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(result)
             except Exception as e:
                 self._handle_post_error(e, "/api/test_proxy")
+        elif effective_path.startswith("/api/nodes/") and effective_path.endswith("/tags"):
+            try:
+                payload = self.read_json_body()
+                raw_tags = payload.get("tags", [])
+                if not isinstance(raw_tags, list):
+                    self.send_json({"ok": False, "error": "tags 必须是字符串数组"}, HTTPStatus.BAD_REQUEST)
+                    return
+                tags = sorted(set(str(t).strip().lower() for t in raw_tags if str(t).strip()))
+                node_id = effective_path.split("/api/nodes/", 1)[1].rsplit("/tags", 1)[0].strip()
+                if not node_id:
+                    self.send_json({"ok": False, "error": "缺少节点 ID"}, HTTPStatus.BAD_REQUEST)
+                    return
+                with lock:
+                    nodes = read_nodes()
+                    node = next((n for n in nodes if n.get("id") == node_id), None)
+                    if not node:
+                        self.send_json({"ok": False, "error": "节点未找到"}, HTTPStatus.NOT_FOUND)
+                        return
+                    node["tags"] = tags
+                    write_json(NODES_FILE, nodes)
+                self.send_json({"ok": True, "node_id": node_id, "tags": tags})
+            except Exception as e:
+                self._handle_post_error(e, "/api/nodes/<id>/tags")
         else:
             self.send_error_json("Not found", "ERR_NOT_FOUND", HTTPStatus.NOT_FOUND)
 
