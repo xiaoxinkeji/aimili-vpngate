@@ -177,6 +177,15 @@ STATE_FILE = DATA_DIR / "state.json"
 AUTH_FILE = DATA_DIR / "vpngate_auth.txt"
 UPSTREAM_PROXY_AUTH_FILE = DATA_DIR / "upstream_proxy_auth.txt"
 BLACKLIST_FILE = DATA_DIR / "blacklist.json"
+ALERT_RULES_FILE = DATA_DIR / "alert_rules.json"
+
+DEFAULT_ALERT_RULES: list[dict[str, Any]] = [
+    {"name": "高延迟告警", "type": "node_latency", "threshold": 500, "cooldown": 300, "enabled": False},
+    {"name": "代理连续故障", "type": "proxy_fail_count", "threshold": 3, "cooldown": 600, "enabled": True},
+    {"name": "会话数过多", "type": "session_count", "threshold": 100, "cooldown": 120, "enabled": False},
+]
+_alert_last_triggered: dict[str, float] = {}
+_proxy_fail_streak: int = 0
 
 lock = threading.RLock()
 maintenance_lock = threading.Lock()
@@ -870,6 +879,62 @@ def load_blacklist() -> dict[str, dict[str, Any]]:
     if changed:
         write_json(BLACKLIST_FILE, cleaned)
     return cleaned
+
+
+def load_alert_rules() -> list[dict[str, Any]]:
+    raw = read_json(ALERT_RULES_FILE, None)
+    if isinstance(raw, list):
+        return raw
+    write_json(ALERT_RULES_FILE, DEFAULT_ALERT_RULES)
+    return list(DEFAULT_ALERT_RULES)
+
+
+def save_alert_rules(rules: list[dict[str, Any]]) -> None:
+    write_json(ALERT_RULES_FILE, rules)
+
+
+def evaluate_alert_rules() -> None:
+    global _alert_last_triggered, _proxy_fail_streak
+    rules = load_alert_rules()
+    now = time.time()
+    for rule in rules:
+        if not rule.get("enabled", False):
+            continue
+        name = rule.get("name", "unnamed")
+        cooldown = float(rule.get("cooldown", 300))
+        if now - _alert_last_triggered.get(name, 0) < cooldown:
+            continue
+        triggered = False
+        msg = ""
+        rtype = rule.get("type", "")
+        threshold = float(rule.get("threshold", 1))
+        if rtype == "node_latency":
+            nodes = read_nodes()
+            for n in nodes:
+                lat = n.get("latency_ms", 0)
+                if lat > threshold and n.get("probe_status") == "available":
+                    triggered = True
+                    msg = f"节点 {n.get('id')} 延迟 {lat}ms 超过阈值 {threshold}ms"
+                    break
+        elif rtype == "proxy_fail_count":
+            state = read_json(STATE_FILE, {})
+            if not state.get("proxy_ok", True):
+                _proxy_fail_streak += 1
+                if _proxy_fail_streak >= int(threshold):
+                    triggered = True
+                    msg = f"代理连续故障 {_proxy_fail_streak} 次，阈值 {int(threshold)}"
+            else:
+                _proxy_fail_streak = 0
+        elif rtype == "session_count":
+            active = proxy_server._sessions.stats().get("active", 0)
+            if active > threshold:
+                triggered = True
+                msg = f"活跃会话数 {active} 超过阈值 {int(threshold)}"
+        if triggered:
+            _alert_last_triggered[name] = now
+            log_to_json("ALERT", "AlertRule", msg)
+            webhook.enqueue("alert.triggered", details={"rule": name, "message": msg})
+
 
 def mark_blacklisted(node: dict[str, Any], message: str) -> None:
     node_id = str(node.get("id") or "").strip()
@@ -5794,6 +5859,7 @@ def check_proxy_health() -> dict[str, Any]:
                     if _last_proxy_health_state is False:
                         webhook.notify_proxy_health(True, ip=res["ip"], latency_ms=res["latency_ms"])
                     _last_proxy_health_state = True
+                    _proxy_fail_streak = 0
                     log_to_json("INFO", "Proxy", f"代理可用，IP: {res['ip']}, 延迟: {res['latency_ms']} ms")
                 else:
                     error_msg = res.get("error", "未知错误")
@@ -5833,6 +5899,7 @@ def check_proxy_health() -> dict[str, Any]:
             except Exception as e:
                 print(f"[错误] 代理后台检测发生异常: {e}", flush=True)
                 log_to_json("ERROR", "Proxy", f"检测守护线程发生异常: {e}")
+            evaluate_alert_rules()
             time.sleep(30)
 
 def active_node_pinger() -> None:
@@ -6572,6 +6639,8 @@ class Handler(BaseHTTPRequestHandler):
                 for t in (n.get("tags") or []):
                     tag_counts[t] = tag_counts.get(t, 0) + 1
             self.send_json({"tags": tag_counts, "total_nodes": len(nodes)})
+        elif effective_path == "/api/alert_rules":
+            self.send_json({"rules": load_alert_rules()})
         else:
             self.send_error_json("Not found", "ERR_NOT_FOUND", HTTPStatus.NOT_FOUND)
 
@@ -6988,6 +7057,27 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"ok": True, "node_id": node_id, "tags": tags})
             except Exception as e:
                 self._handle_post_error(e, "/api/nodes/<id>/tags")
+        elif effective_path == "/api/alert_rules":
+            try:
+                payload = self.read_json_body()
+                raw_rules = payload.get("rules", [])
+                if not isinstance(raw_rules, list):
+                    self.send_json({"ok": False, "error": "rules 必须是数组"}, HTTPStatus.BAD_REQUEST)
+                    return
+                valid_rules = []
+                for r in raw_rules:
+                    if isinstance(r, dict) and r.get("name") and r.get("type"):
+                        valid_rules.append({
+                            "name": str(r["name"]).strip(),
+                            "type": str(r["type"]).strip(),
+                            "threshold": float(r.get("threshold", 1)),
+                            "cooldown": float(r.get("cooldown", 300)),
+                            "enabled": bool(r.get("enabled", True)),
+                        })
+                save_alert_rules(valid_rules)
+                self.send_json({"ok": True, "rules": valid_rules})
+            except Exception as e:
+                self._handle_post_error(e, "/api/alert_rules")
         else:
             self.send_error_json("Not found", "ERR_NOT_FOUND", HTTPStatus.NOT_FOUND)
 
