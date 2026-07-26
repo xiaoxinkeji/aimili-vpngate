@@ -83,6 +83,7 @@ import self_update
 import dns_forwarder
 import geoip
 import webhook
+import metrics
 
 try:
     import publicvpnlist_scraper
@@ -6278,6 +6279,24 @@ class Handler(BaseHTTPRequestHandler):
             raise ValueError("请求 JSON 必须是对象")
         return data
 
+    def _handle_metrics(self) -> None:
+        try:
+            state = read_json(STATE_FILE, {})
+            proxy_ok = state.get("proxy_ok", False)
+            traffic = proxy_server.get_traffic_stats()
+            sessions = proxy_server._sessions.stats()
+            nodes = read_nodes()
+            dns_s = dns_forwarder.get_dns_stats() if os.environ.get("DNS_FORWARDER_ENABLED", "").lower() in ("1", "true", "yes") else None
+            geoip_s = {"cache_size": geoip._cache_size if hasattr(geoip, '_cache_size') else 0}
+            rl_s: dict[str, Any] = {"paths": {}}
+            with _rate_limiter_lock:
+                for p, (t, _) in _rate_limits.items():
+                    rl_s["paths"][p] = {"tokens": round(t, 2)}
+            content = metrics.generate_metrics(proxy_ok, traffic, sessions, nodes, rl_s, dns_s, geoip_s)
+            self.send_bytes(content.encode("utf-8"), "text/plain; version=0.0.4; charset=utf-8")
+        except Exception as e:
+            self.send_json({"error": str(e)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+
     def _check_rate_limit(self) -> bool:
         """返回 True 表示被限流（已发送 429），False 表示放行"""
         if API_RATE_LIMIT_PER_MINUTE <= 0:
@@ -6329,6 +6348,10 @@ class Handler(BaseHTTPRequestHandler):
         if effective_path == "/ready":
             nodes_loaded = len(read_nodes()) > 0
             self.send_json({"status": "ready" if nodes_loaded else "starting", "nodes": len(read_nodes())})
+            return
+
+        if effective_path == "/metrics":
+            self._handle_metrics()
             return
 
         if effective_path == "/favicon.ico":
