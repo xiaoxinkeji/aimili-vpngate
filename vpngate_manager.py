@@ -436,6 +436,89 @@ def emit(level: str, module: str, message: str) -> None:
     print(f"[{module}] [{level}] {message}", flush=True)
     log_to_json(level, module, message)
 
+
+def query_logs(from_ts: float = 0, to_ts: float | None = None,
+               level: str | None = None, module: str | None = None,
+               limit: int = 100, offset: int = 0) -> dict[str, Any]:
+    """查询审计日志，支持时间范围、级别、模块过滤。"""
+    import glob as _glob
+    logs_dir = DATA_DIR / "logs"
+    if not logs_dir.exists():
+        return {"total": 0, "items": [], "from_ts": from_ts, "to_ts": to_ts}
+    if to_ts is None:
+        to_ts = time.time()
+    files = sorted(_glob.glob(str(logs_dir / "*.json")), reverse=True)
+    items: list[dict[str, Any]] = []
+    for fp in files:
+        if len(items) >= offset + limit:
+            break
+        try:
+            with open(fp, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        entry = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    ts_str = entry.get("timestamp", "")
+                    try:
+                        entry_ts = time.mktime(time.strptime(ts_str, "%Y-%m-%d %H:%M:%S"))
+                    except (ValueError, OSError):
+                        continue
+                    if entry_ts < from_ts or entry_ts > to_ts:
+                        continue
+                    if level and entry.get("level", "").upper() != level.upper():
+                        continue
+                    if module and entry.get("module", "").lower() != module.lower():
+                        continue
+                    items.append({**entry, "ts": entry_ts})
+        except OSError:
+            continue
+    total = len(items)
+    items = items[offset:offset + limit]
+    return {"total": total, "items": items, "from_ts": from_ts, "to_ts": to_ts}
+
+
+def query_log_stats(days: int = 7) -> dict[str, Any]:
+    """日志统计: 近 N 天各级别计数。"""
+    import glob as _glob
+    logs_dir = DATA_DIR / "logs"
+    if not logs_dir.exists():
+        return {"days": days, "by_level": {}, "total": 0}
+    cutoff = time.time() - days * 86400
+    files = sorted(_glob.glob(str(logs_dir / "*.json")), reverse=True)
+    by_level: dict[str, int] = {}
+    by_module: dict[str, int] = {}
+    total = 0
+    for fp in files:
+        try:
+            fname = Path(fp).stem
+            try:
+                file_date_ts = time.mktime(time.strptime(fname, "%Y-%m-%d"))
+            except (ValueError, OSError):
+                continue
+            if file_date_ts < cutoff:
+                continue
+            with open(fp, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        entry = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    lv = entry.get("level", "UNKNOWN")
+                    mod = entry.get("module", "UNKNOWN")
+                    by_level[lv] = by_level.get(lv, 0) + 1
+                    by_module[mod] = by_module.get(mod, 0) + 1
+                    total += 1
+        except OSError:
+            continue
+    return {"days": days, "total": total, "by_level": by_level, "by_module": by_module}
+
 def set_state(**updates: Any) -> None:
     global is_connecting
     with lock:
@@ -6439,6 +6522,36 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(s)
             else:
                 self.send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
+        elif effective_path == "/api/logs":
+            qs = urllib.parse.urlparse(self.path).query
+            params = dict(urllib.parse.parse_qsl(qs))
+            try:
+                from_ts = float(params.get("from", 0))
+            except (ValueError, TypeError):
+                from_ts = 0
+            try:
+                to_ts = float(params.get("to", time.time()))
+            except (ValueError, TypeError):
+                to_ts = time.time()
+            level = params.get("level")
+            module = params.get("module")
+            try:
+                limit = min(int(params.get("limit", 100)), 500)
+            except (ValueError, TypeError):
+                limit = 100
+            try:
+                offset = max(int(params.get("offset", 0)), 0)
+            except (ValueError, TypeError):
+                offset = 0
+            self.send_json(query_logs(from_ts, to_ts, level, module, limit, offset))
+        elif effective_path == "/api/log_stats":
+            qs = urllib.parse.urlparse(self.path).query
+            params = dict(urllib.parse.parse_qsl(qs))
+            try:
+                days = int(params.get("days", 7))
+            except (ValueError, TypeError):
+                days = 7
+            self.send_json(query_log_stats(days))
         else:
             self.send_error_json("Not found", "ERR_NOT_FOUND", HTTPStatus.NOT_FOUND)
 
