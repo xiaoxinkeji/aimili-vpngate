@@ -2513,7 +2513,10 @@ def connect_node(node_id: str) -> str:
         stopped_existing = True
 
         set_state(active_node_latency="写入配置", last_check_message="正在写入 OpenVPN 节点配置文件...")
-        config_path = Path(node["config_file"])
+        config_file = node.get("config_file") or ""
+        if not config_file:
+            raise ValueError(f"Node {node_id} missing config_file")
+        config_path = Path(config_file)
         try:
             CONFIG_DIR.mkdir(exist_ok=True, parents=True)
             config_path.write_text(node.get("config_text") or "", encoding="utf-8")
@@ -2522,7 +2525,7 @@ def connect_node(node_id: str) -> str:
 
         set_state(active_node_latency="启动核心", last_check_message="正在启动 OpenVPN Core 核心服务并建立连接...")
         use_dev = "null" if not TUN_AVAILABLE else "tun0"
-        ok, message, process = run_openvpn_until_ready(str(node["config_file"]), keep_alive=True, route_nopull=True, dev=use_dev)
+        ok, message, process = run_openvpn_until_ready(config_file, keep_alive=True, route_nopull=True, dev=use_dev)
         if not ok or process is None:
             try:
                 if config_path.exists():
@@ -2794,10 +2797,15 @@ def maintain_valid_nodes(force: bool = False) -> str:
                 merged = merged[:1000]
                 
             for n in merged:
-                config_path = Path(n["config_file"])
+                config_text = n.get("config_text", "")
+                config_file = n.get("config_file", "")
+                if not config_file or not config_text:
+                    continue
+                config_path = Path(config_file)
                 if not config_path.exists():
                     try:
-                        config_path.write_text(n["config_text"], encoding="utf-8")
+                        config_path.parent.mkdir(parents=True, exist_ok=True)
+                        config_path.write_text(config_text, encoding="utf-8")
                     except Exception:
                         pass
                         
@@ -6190,7 +6198,7 @@ class Handler(BaseHTTPRequestHandler):
             duration = (time.time() - self._request_start) * 1000
             path = getattr(self, '_effective_path', '?')
             method = self.command if hasattr(self, 'command') else '?'
-            emit("ACCESS", f"method={method} path={path} status={self._response_status} duration={duration:.1f}ms ip={self.client_address[0]} request_id={self._request_id}")
+            emit("ACCESS", "HTTP", f"method={method} path={path} status={self._response_status} duration={duration:.1f}ms ip={self.client_address[0]} request_id={self._request_id}")
 
     def send_response(self, code, message=None):
         self._response_status = code
