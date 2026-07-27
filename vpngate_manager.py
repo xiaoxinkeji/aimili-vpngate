@@ -887,7 +887,7 @@ def load_blacklist() -> dict[str, dict[str, Any]]:
 
 def load_alert_rules() -> list[dict[str, Any]]:
     raw = read_json(ALERT_RULES_FILE, None)
-    if isinstance(raw, list):
+    if isinstance(raw, list) and raw:
         return raw
     write_json(ALERT_RULES_FILE, DEFAULT_ALERT_RULES)
     return list(DEFAULT_ALERT_RULES)
@@ -6510,6 +6510,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         effective_path = self.validate_path()
+        self._effective_path = effective_path
         if effective_path == "": return
 
         # WebSocket upgrade (before rate limit / auth)
@@ -6870,6 +6871,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         global is_connecting
         effective_path = self.validate_path()
+        self._effective_path = effective_path
         if effective_path == "": return
         if self._check_rate_limit():
             return
