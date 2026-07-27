@@ -239,7 +239,90 @@ _client_limiter = ClientRateLimiter()
 get_client_limit_status = _client_limiter.status
 
 
-def _counted_relay(left: socket.socket, right: socket.socket, session_id: str = "", client_ip: str = "") -> None:
+class UserTrafficAccountant:
+    """线程安全的按用户流量统计器，持久化到 JSON 文件。"""
+
+    def __init__(self, data_dir: str = "") -> None:
+        self._lock = threading.Lock()
+        self._users: dict[str, dict[str, int]] = {}
+        self._file = Path(data_dir) / "user_traffic.json" if data_dir else Path("user_traffic.json")
+        self._dirty = False
+        self._load()
+
+    def _load(self) -> None:
+        try:
+            if self._file.exists():
+                import json as _json
+                data = _json.loads(self._file.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    for k, v in data.items():
+                        if isinstance(v, dict):
+                            self._users[k] = {
+                                "bytes_in": int(v.get("bytes_in", 0)),
+                                "bytes_out": int(v.get("bytes_out", 0)),
+                                "connections": int(v.get("connections", 0)),
+                            }
+        except Exception:
+            pass
+
+    def flush(self) -> None:
+        if not self._dirty:
+            return
+        with self._lock:
+            try:
+                self._file.parent.mkdir(parents=True, exist_ok=True)
+                import json as _json
+                self._file.write_text(_json.dumps(self._users, ensure_ascii=False, indent=2), encoding="utf-8")
+                self._dirty = False
+            except Exception:
+                pass
+
+    def add_bytes(self, username: str, in_bytes: int, out_bytes: int) -> None:
+        if not username:
+            username = "anonymous"
+        with self._lock:
+            entry = self._users.setdefault(username, {"bytes_in": 0, "bytes_out": 0, "connections": 0})
+            entry["bytes_in"] += in_bytes
+            entry["bytes_out"] += out_bytes
+            self._dirty = True
+
+    def add_connection(self, username: str) -> None:
+        if not username:
+            username = "anonymous"
+        with self._lock:
+            entry = self._users.setdefault(username, {"bytes_in": 0, "bytes_out": 0, "connections": 0})
+            entry["connections"] += 1
+            self._dirty = True
+
+    def snapshot(self) -> list[dict[str, Any]]:
+        with self._lock:
+            result = []
+            for username, entry in self._users.items():
+                result.append({
+                    "username": username,
+                    "bytes_in": entry["bytes_in"],
+                    "bytes_out": entry["bytes_out"],
+                    "bytes_in_mb": round(entry["bytes_in"] / (1024 * 1024), 2),
+                    "bytes_out_mb": round(entry["bytes_out"] / (1024 * 1024), 2),
+                    "connections": entry["connections"],
+                })
+            result.sort(key=lambda x: x["bytes_in"] + x["bytes_out"], reverse=True)
+            return result
+
+    def reset(self) -> None:
+        with self._lock:
+            self._users.clear()
+            self._dirty = True
+        self.flush()
+
+
+_user_traffic = UserTrafficAccountant(os.environ.get("VPNGATE_DATA_DIR", ""))
+get_user_traffic = _user_traffic.snapshot
+reset_user_traffic = _user_traffic.reset
+flush_user_traffic = _user_traffic.flush
+
+
+def _counted_relay(left: socket.socket, right: socket.socket, session_id: str = "", client_ip: str = "", username: str = "") -> None:
     """带流量统计的数据中继，行为同 relay()。"""
     left.setblocking(False)
     right.setblocking(False)
@@ -280,6 +363,10 @@ def _counted_relay(left: socket.socket, right: socket.socket, session_id: str = 
                         _traffic.add_bytes(in_bytes, out_bytes)
                         if session_id:
                             _sessions.add_bytes(session_id, in_bytes, out_bytes)
+                        if username:
+                            _user_traffic.add_bytes(username, in_bytes, out_bytes)
+                        in_bytes = 0
+                        out_bytes = 0
                         return
                     target_buf = write_bufs.setdefault(other, bytearray())
                     target_buf.extend(data)
@@ -299,9 +386,18 @@ def _counted_relay(left: socket.socket, right: socket.socket, session_id: str = 
                     _traffic.add_bytes(in_bytes, out_bytes)
                     if session_id:
                         _sessions.add_bytes(session_id, in_bytes, out_bytes)
+                    if username:
+                        _user_traffic.add_bytes(username, in_bytes, out_bytes)
+                    in_bytes = 0
+                    out_bytes = 0
                     return
     finally:
-        pass
+        if in_bytes > 0 or out_bytes > 0:
+            _traffic.add_bytes(in_bytes, out_bytes)
+            if session_id:
+                _sessions.add_bytes(session_id, in_bytes, out_bytes)
+            if username:
+                _user_traffic.add_bytes(username, in_bytes, out_bytes)
 
 def parse_int(value: Any) -> int:
     try:
@@ -798,6 +894,7 @@ def socks5_udp_relay(relay_sock: socket.socket, client_addr: tuple[str, int],
 def socks5_client(client: socket.socket, first_byte: bytes) -> None:
     upstream = None
     udp_relay_sock = None
+    socks5_username = "anonymous"
     try:
         methods_count = recv_exact(client, 1)[0]
         methods = recv_exact(client, methods_count)
@@ -815,6 +912,7 @@ def socks5_client(client: socket.socket, first_byte: bytes) -> None:
             if not check_credentials(username, password):
                 client.sendall(b"\x01\x01")
                 return
+            socks5_username = username
             client.sendall(b"\x01\x00")
         else:
             client.sendall(b"\x05\x00")
@@ -893,8 +991,9 @@ def socks5_client(client: socket.socket, first_byte: bytes) -> None:
         except Exception:
             client_addr = "unknown"
         sid = _sessions.create(client_addr, f"{host}:{port}", "socks5")
+        _user_traffic.add_connection(socks5_username)
         try:
-            _counted_relay(client, upstream, sid, client_addr)
+            _counted_relay(client, upstream, sid, client_addr, socks5_username)
         finally:
             _sessions.close(sid)
     finally:
@@ -918,6 +1017,7 @@ def read_http_header(client: socket.socket, first_byte: bytes) -> bytes:
 
 def http_client(client: socket.socket, first_byte: bytes) -> None:
     upstream = None
+    http_username = "anonymous"
     try:
         header = read_http_header(client, first_byte)
         if b"\r\n\r\n" not in header:
@@ -942,6 +1042,7 @@ def http_client(client: socket.socket, first_byte: bytes) -> None:
                     b"Content-Length: 0\r\n\r\n"
                 )
                 return
+            http_username = username or "anonymous"
         if method.upper() == "CONNECT":
             host, port = parse_host_port(target, 443)
             upstream = create_connection((host, port), timeout=20)
@@ -953,8 +1054,9 @@ def http_client(client: socket.socket, first_byte: bytes) -> None:
             except Exception:
                 client_addr = "unknown"
             sid = _sessions.create(client_addr, f"{host}:{port}", "http_connect")
+            _user_traffic.add_connection(http_username)
             try:
-                _counted_relay(client, upstream, sid, client_addr)
+                _counted_relay(client, upstream, sid, client_addr, http_username)
             finally:
                 _sessions.close(sid)
             return
@@ -998,8 +1100,9 @@ def http_client(client: socket.socket, first_byte: bytes) -> None:
         except Exception:
             client_addr = "unknown"
         sid = _sessions.create(client_addr, f"{hostname}:{port}", "http")
+        _user_traffic.add_connection(http_username)
         try:
-            _counted_relay(client, upstream, sid, client_addr)
+            _counted_relay(client, upstream, sid, client_addr, http_username)
         finally:
             _sessions.close(sid)
     except Exception as e:

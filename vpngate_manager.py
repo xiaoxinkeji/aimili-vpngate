@@ -6488,6 +6488,8 @@ class Handler(BaseHTTPRequestHandler):
         if now_ts - _last_cleanup > 600:
             with lock:
                 Handler._rate_limit_cleanup_at = now_ts
+                if not hasattr(Handler, '_rate_limit_map'):
+                    Handler._rate_limit_map = {}
                 purged = [k for k, v in Handler._rate_limit_map.items() if not v]
                 for k in purged:
                     del Handler._rate_limit_map[k]
@@ -6800,6 +6802,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(proxy_server.get_client_limit_status())
         elif effective_path == "/api/client_acls":
             self.send_json(proxy_server.get_acl_status())
+        elif effective_path == "/api/traffic_by_user":
+            self.send_json({"users": proxy_server.get_user_traffic()})
         elif effective_path.startswith("/api/sessions/"):
             sid = effective_path.split("/api/sessions/", 1)[1]
             s = proxy_server.get_session(sid)
@@ -7354,6 +7358,9 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"ok": False, "error": str(ve)}, HTTPStatus.BAD_REQUEST)
             except Exception as e:
                 self._handle_post_error(e, "/api/backup/import")
+        elif effective_path == "/api/traffic_reset":
+            proxy_server.reset_user_traffic()
+            self.send_json({"ok": True, "message": "用户流量统计已重置"})
         else:
             self.send_error_json("Not found", "ERR_NOT_FOUND", HTTPStatus.NOT_FOUND)
 
@@ -7498,6 +7505,10 @@ def main() -> None:
         sig_name = signal.Signals(signum).name
         print(f"\n[{sig_name}] 收到关闭信号，正在优雅停机...", flush=True)
         log_to_json("INFO", "Main", f"Received {sig_name}, shutting down gracefully")
+        try:
+            proxy_server.flush_user_traffic()
+        except Exception:
+            pass
 
     signal.signal(signal.SIGHUP, _handle_signal)
     signal.signal(signal.SIGTERM, _handle_signal)
