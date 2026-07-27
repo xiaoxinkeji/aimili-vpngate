@@ -330,7 +330,7 @@ def bandwidth_speed_test(host: str, port: int, size_mb: int = 10, timeout: float
     result: dict[str, Any] = {"speed_mbps": 0.0, "size_mb": size_mb, "duration_s": 0.0, "error": None}
     try:
         start = time.time()
-        url = f"http://{host}:{port}/EJsW2EeBo9lY/api/speedtest?size={size_mb}"
+        url = f"http://{host}:{port}/api/speedtest?size={size_mb}"
         req = urllib.request.Request(url)
         resp = urllib.request.urlopen(req, timeout=timeout)
         total = 0
@@ -809,3 +809,67 @@ def diagnose_local_obstructions(proxy_port: int = 7928, host: str = "127.0.0.1")
 
 
 # ========== 节点性能历史 ==========
+PERF_HISTORY_FILE = DATA_DIR / "perf_history.json"
+PERF_HISTORY_WINDOW = 48  # 每个节点保留最近 48 条性能记录
+_perf_history_lock = threading.Lock()
+
+
+def load_perf_history() -> dict[str, list[dict[str, Any]]]:
+    with _perf_history_lock:
+        try:
+            if PERF_HISTORY_FILE.exists():
+                data = json.loads(PERF_HISTORY_FILE.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    return data
+        except Exception:
+            pass
+        return {}
+
+
+def save_perf_history(history: dict[str, list[dict[str, Any]]]) -> None:
+    with _perf_history_lock:
+        try:
+            DATA_DIR.mkdir(exist_ok=True, parents=True)
+            PERF_HISTORY_FILE.write_text(json.dumps(history, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+
+
+def _summarize_perf(node_id: str, entries: list[dict[str, Any]]) -> dict[str, Any]:
+    if not entries:
+        return {"node_id": node_id, "history_count": 0}
+    latencies = [e["latency_ms"] for e in entries if e.get("latency_ms", 0) > 0]
+    successes = sum(1 for e in entries if e.get("status") == "available")
+    return {
+        "node_id": node_id,
+        "history_count": len(entries),
+        "success_rate": round(successes / max(len(entries), 1), 2),
+        "latency_min": min(latencies) if latencies else 0,
+        "latency_max": max(latencies) if latencies else 0,
+        "latency_avg": round(sum(latencies) / max(len(latencies), 1)) if latencies else 0,
+        "recent": entries[-5:],
+    }
+
+
+def record_node_perf(node_id: str, latency_ms: int, status: str, message: str) -> dict[str, Any]:
+    """记录一次节点探测结果并返回该节点的聚合统计。"""
+    history = load_perf_history()
+    entries = history.get(node_id, [])
+    entries.append({
+        "ts": time.time(),
+        "latency_ms": latency_ms,
+        "status": status,
+        "message": message,
+    })
+    if len(entries) > PERF_HISTORY_WINDOW:
+        entries = entries[-PERF_HISTORY_WINDOW:]
+    history[node_id] = entries
+    save_perf_history(history)
+    return _summarize_perf(node_id, entries)
+
+
+def get_node_perf(node_id: str) -> dict[str, Any]:
+    """查询单个节点的历史性能统计。"""
+    history = load_perf_history()
+    entries = history.get(node_id, [])
+    return _summarize_perf(node_id, entries)
