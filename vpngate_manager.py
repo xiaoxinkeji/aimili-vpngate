@@ -181,6 +181,7 @@ AUTH_FILE = DATA_DIR / "vpngate_auth.txt"
 UPSTREAM_PROXY_AUTH_FILE = DATA_DIR / "upstream_proxy_auth.txt"
 BLACKLIST_FILE = DATA_DIR / "blacklist.json"
 ALERT_RULES_FILE = DATA_DIR / "alert_rules.json"
+API_KEYS_FILE = DATA_DIR / "api_keys.json"
 
 DEFAULT_ALERT_RULES: list[dict[str, Any]] = [
     {"name": "高延迟告警", "type": "node_latency", "threshold": 500, "cooldown": 300, "enabled": False},
@@ -895,6 +896,61 @@ def load_alert_rules() -> list[dict[str, Any]]:
 
 def save_alert_rules(rules: list[dict[str, Any]]) -> None:
     write_json(ALERT_RULES_FILE, rules)
+
+
+def load_api_keys() -> list[dict[str, Any]]:
+    raw = read_json(API_KEYS_FILE, None)
+    if isinstance(raw, list):
+        return raw
+    return []
+
+
+def save_api_keys(keys: list[dict[str, Any]]) -> None:
+    write_json(API_KEYS_FILE, keys)
+
+
+_api_key_last_used: dict[str, float] = {}
+
+
+def verify_api_key(token: str) -> str | None:
+    if not token:
+        return None
+    keys = load_api_keys()
+    now = time.time()
+    for entry in keys:
+        stored = entry.get("key", "")
+        if stored and secrets.compare_digest(token, stored):
+            entry["last_used"] = now
+            _api_key_last_used[entry.get("id", "")] = now
+            save_api_keys(keys)
+            return entry.get("name", "unknown")
+    return None
+
+
+def create_api_key(name: str) -> dict[str, Any]:
+    import uuid
+    raw = secrets.token_urlsafe(32)
+    entry = {
+        "id": uuid.uuid4().hex[:12],
+        "name": name or "unnamed",
+        "key": raw,
+        "created_at": time.time(),
+        "last_used": 0,
+    }
+    keys = load_api_keys()
+    keys.append(entry)
+    save_api_keys(keys)
+    return entry
+
+
+def revoke_api_key(key_id: str) -> bool:
+    keys = load_api_keys()
+    before = len(keys)
+    keys = [k for k in keys if k.get("id") != key_id]
+    if len(keys) < before:
+        save_api_keys(keys)
+        return True
+    return False
 
 
 def evaluate_alert_rules() -> None:
@@ -6211,6 +6267,11 @@ class Handler(BaseHTTPRequestHandler):
     def is_authorized(self) -> bool:
         if X_MILI_TOKEN and self.is_xmili_token_valid():
             return True
+        api_key = self.headers.get("X-API-Key", "")
+        if api_key:
+            user = verify_api_key(api_key)
+            if user:
+                return True
         ui_cfg = load_ui_config()
         pwd = ui_cfg.get("password")
         if not pwd:
@@ -6804,6 +6865,10 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(proxy_server.get_acl_status())
         elif effective_path == "/api/traffic_by_user":
             self.send_json({"users": proxy_server.get_user_traffic()})
+        elif effective_path == "/api/api_keys":
+            keys = load_api_keys()
+            safe = [{"id": k.get("id"), "name": k.get("name"), "created_at": k.get("created_at"), "last_used": k.get("last_used", 0), "key_preview": k.get("key", "")[:8] + "..."} for k in keys]
+            self.send_json({"keys": safe, "total": len(safe)})
         elif effective_path.startswith("/api/sessions/"):
             sid = effective_path.split("/api/sessions/", 1)[1]
             s = proxy_server.get_session(sid)
@@ -7361,6 +7426,33 @@ class Handler(BaseHTTPRequestHandler):
         elif effective_path == "/api/traffic_reset":
             proxy_server.reset_user_traffic()
             self.send_json({"ok": True, "message": "用户流量统计已重置"})
+        elif effective_path == "/api/api_keys":
+            try:
+                payload = self.read_json_body()
+                name = str(payload.get("name", "")).strip()
+                if not name:
+                    self.send_json({"ok": False, "error": "name is required"}, HTTPStatus.BAD_REQUEST)
+                    return
+                entry = create_api_key(name)
+                log_to_json("INFO", "Auth", f"API Key 创建: {name} (id={entry['id']})")
+                self.send_json({"ok": True, "id": entry["id"], "name": entry["name"], "key": entry["key"], "created_at": entry["created_at"]})
+            except Exception as e:
+                self._handle_post_error(e, "/api/api_keys")
+        elif effective_path == "/api/api_keys/revoke":
+            try:
+                payload = self.read_json_body()
+                key_id = str(payload.get("id", "")).strip()
+                if not key_id:
+                    self.send_json({"ok": False, "error": "id is required"}, HTTPStatus.BAD_REQUEST)
+                    return
+                ok = revoke_api_key(key_id)
+                if ok:
+                    log_to_json("INFO", "Auth", f"API Key 已吊销: {key_id}")
+                    self.send_json({"ok": True, "message": f"API Key {key_id} 已吊销"})
+                else:
+                    self.send_json({"ok": False, "error": "key not found"}, HTTPStatus.NOT_FOUND)
+            except Exception as e:
+                self._handle_post_error(e, "/api/api_keys/revoke")
         else:
             self.send_error_json("Not found", "ERR_NOT_FOUND", HTTPStatus.NOT_FOUND)
 
