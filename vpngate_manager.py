@@ -201,6 +201,7 @@ active_openvpn_node_id = ""
 is_connecting = False
 last_active_ping_time = 0.0
 last_active_latency = 0
+_tunnel_established_at: float = 0.0
 
 def _check_tun() -> bool:
     try:
@@ -1791,7 +1792,8 @@ def cleanup_policy_routing() -> None:
         pass
 
 def stop_active_openvpn() -> None:
-    global active_openvpn_process, active_openvpn_node_id
+    global active_openvpn_process, active_openvpn_node_id, _tunnel_established_at
+    _tunnel_established_at = 0.0
     with lock:
         cleanup_policy_routing()
         config_to_delete = None
@@ -2613,6 +2615,8 @@ def connect_node(node_id: str) -> str:
         with lock:
             active_openvpn_process = process
             active_openvpn_node_id = node_id
+            global _tunnel_established_at
+            _tunnel_established_at = time.time()
         
         set_state(active_node_latency="配置路由", last_check_message="正在配置策略路由规则与流量转发...")
         if TUN_AVAILABLE:
@@ -6116,25 +6120,33 @@ def background_proxy_checker() -> None:
                 )
 
                 # If we intended to have an active VPN node but proxy failed, trigger auto-switch
+                # Only switch after a grace period (allow tunnel to stabilize) and
+                # after consecutive failures exceed the threshold (avoid thrashing)
                 if active_openvpn_node_id:
-                    ui_cfg = load_ui_config()
-                    routing_mode = ui_cfg.get("routing_mode", "auto")
-                    if routing_mode != "fixed_ip":
-                        with lock:
-                            nodes = read_nodes()
-                            active_node = next((n for n in nodes if n.get("id") == active_openvpn_node_id), None)
-                            if active_node:
-                                mark_blacklisted(active_node, f"代理连通性检测失败: {error_msg}")
-                                active_node["probe_status"] = "unavailable"
-                                write_json(NODES_FILE, nodes)
-                        auto_switch_node()
-                    else:
-                        print(f"[代理守护线程] 固定 IP 模式下代理不可用，正在尝试重启连接同一节点: {active_openvpn_node_id}", flush=True)
-                        is_connecting = False
-                        try:
-                            connect_node(active_openvpn_node_id)
-                        except Exception as e:
-                            print(f"[代理守护线程] 重启固定节点失败: {e}", flush=True)
+                    _proxy_fail_streak += 1
+                    _now_ts = time.time()
+                    _grace_ok = (_tunnel_established_at > 0 and _now_ts - _tunnel_established_at >= 90)
+                    _threshold_ok = _proxy_fail_streak >= 3
+                    if _grace_ok and _threshold_ok:
+                        ui_cfg = load_ui_config()
+                        routing_mode = ui_cfg.get("routing_mode", "auto")
+                        if routing_mode != "fixed_ip":
+                            with lock:
+                                nodes = read_nodes()
+                                active_node = next((n for n in nodes if n.get("id") == active_openvpn_node_id), None)
+                                if active_node:
+                                    mark_blacklisted(active_node, f"代理连通性检测失败 (连续{_proxy_fail_streak}次): {error_msg}")
+                                    active_node["probe_status"] = "unavailable"
+                                    write_json(NODES_FILE, nodes)
+                            _proxy_fail_streak = 0
+                            auto_switch_node()
+                        else:
+                            print(f"[代理守护线程] 固定 IP 模式下代理不可用，正在尝试重启连接同一节点: {active_openvpn_node_id}", flush=True)
+                            is_connecting = False
+                            try:
+                                connect_node(active_openvpn_node_id)
+                            except Exception as e:
+                                print(f"[代理守护线程] 重启固定节点失败: {e}", flush=True)
         except Exception as e:
             print(f"[错误] 代理后台检测发生异常: {e}", flush=True)
             log_to_json("ERROR", "Proxy", f"检测守护线程发生异常: {e}")
