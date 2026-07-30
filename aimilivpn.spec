@@ -1,12 +1,34 @@
 # -*- mode: python ; coding: utf-8 -*-
 
-
 a = Analysis(
     ['vpngate_manager.py'],
     pathex=[],
     binaries=[],
-    datas=[('vpn_utils.py', '.'), ('proxy_server.py', '.')],
-    hiddenimports=['http.server', 'json', 'csv', 'queue', 'select', 'shlex', 'hashlib'],
+    datas=[
+        ('vpn_utils.py', '.'),
+        ('proxy_server.py', '.'),
+        ('dns_forwarder.py', '.'),
+        ('scheduler.py', '.'),
+        ('webhook.py', '.'),
+        ('geoip.py', '.'),
+        ('metrics_exporter.py', '.'),
+        ('self_update.py', '.'),
+        ('publicvpnlist_scraper.py', '.'),
+    ],
+    hiddenimports=[
+        'http.server',
+        'json',
+        'csv',
+        'queue',
+        'select',
+        'shlex',
+        'hashlib',
+        'html.parser',
+        'urllib.request',
+        'urllib.parse',
+        'threading',
+        'socketserver',
+    ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
