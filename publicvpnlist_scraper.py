@@ -3,7 +3,6 @@
 
 import html.parser
 import json
-import re
 import sys
 import time
 import urllib.request
@@ -67,9 +66,13 @@ def fetch_pvl_nodes() -> list[dict[str, Any]]:
                     continue
                 seen.add(sid)
 
-                speed_raw = float(row.get("speed", "0") or "0")
-                latency_raw = float(row.get("latency", "0") or "0")
-                port_raw = int(row.get("port", "0") or "0")
+                try:
+                    speed_raw = float(row.get("speed", "0") or "0")
+                    latency_raw = float(row.get("latency", "0") or "0")
+                    port_raw = int(row.get("port", "0") or "0")
+                except (ValueError, TypeError) as e:
+                    print(f"[PVL] 解析节点 {sid} 数值字段失败: {e}", flush=True)
+                    continue
 
                 country_name = row.get("country-name", "")
                 country_short = (row.get("country", "") or "").upper()

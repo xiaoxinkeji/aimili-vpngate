@@ -112,4 +112,26 @@
   - `emit(level, module, message)`: 统一 print + log_to_json 接口，Fetcher/Collector/Maintenance/VPN 模块已迁移
   - 新增 `env_float()` 工具函数支持浮点型环境变量
   - `vpngate_manager.py` 是 ~6900 行的单文件 Python 应用 (标准库 only)
-  - `metrics_exporter.py` 是独立的 Prometheus sidecar，也仅用标准库
+   - `metrics_exporter.py` 是独立的 Prometheus sidecar，也仅用标准库
+
+### 代码质量修复 (通用缺陷 — 2026-07-29)
+- Date: 2026-07-29
+- Context: Agent 在执行全项目代码质量审查时发现并修复 6 个通用缺陷
+- Category: 排错调试
+- Instructions:
+  - `scheduler.py:stop()`: 增加 thread join + 重置 _thread 引用，支持安全重启 (原实现仅 set event 无等待)
+  - `webhook.py:_deliver()`: HTTP 响应改用 `with urlopen() as resp` 防止连接泄漏 (原实现未关闭 response body)
+  - `self_update.py:_checker()`: 后台异常改为 `print(f"…{e}")` 替代 `except Exception: pass` (静默吞噬导致无法排查)
+  - `publicvpnlist_scraper.py`: 节点数值解析 (float/int) 改为 per-row try/except，单条错误不丢失整页其他节点
+  - `metrics_exporter.py`: pgrep 进程资源读取异常改为打印可见日志替代 `except Exception: pass`
+  - `docker-stats.py`: ANSI 颜色码仅在 stdout.isatty() 时启用，非终端环境输出空字符串 (防止重定向日志乱码)
+  - `dns_forwarder.py:_parse_qname()`: UnicodeDecodeError 增加异常日志输出替代静默 break
+  - `dns_forwarder.py:start_dns_forwarder()`: IPV6_V6ONLY 设置失败增加日志输出替代静默 pass
+  - `metrics_exporter.py:tcp_port_open()`: socket 异常时通过 finally 块确保 close()，防止连接泄漏
+  - `proxy_server.py:BillingStats._load/flush()`: 流量统计文件读写失败增加日志输出替代静默 pass
+  - `vpn_utils.py:bandwidth_speed_test()`: HTTP 响应改用 `with urlopen() as resp` 防止连接泄漏
+  - `vpn_utils.py:bandwidth_speed_test_over_proxy()`: HTTP 响应改用 `with opener.open() as resp` 防止连接泄漏
+  - pyflakes 清理: 移除 `publicvpnlist_scraper.py` 未使用的 `import re`、`webhook.py` 无用的 `global WEBHOOK_URLS`
+  - pyflakes 清理: `vpngate_manager.py` 移除未使用的 `import select`、修复 `except Exception as e` 中 `e` 未使用
+  - pyflakes 清理: 移除 `docker-stats.py`、`proxy_server.py`、`vpn_utils.py`、`vpngate_manager.py` 中的空 f-string 前缀
+  - pyflakes 清理：移除 `vpngate_manager.py` 未使用的 `global`/`nonlocal` 声明 (5 处)，剩余 3 个 pyflakes 问题均为误报/有意为之

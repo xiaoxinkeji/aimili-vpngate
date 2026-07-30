@@ -8,7 +8,6 @@ import os
 import queue
 import re
 import secrets
-import select
 import shlex
 import signal
 import socket
@@ -551,7 +550,6 @@ def read_nodes() -> list[dict[str, Any]]:
     return [item for item in raw if isinstance(item, dict)]
 
 def get_state() -> dict[str, Any]:
-    global active_openvpn_node_id, is_connecting
     state = read_json(STATE_FILE, {})
     state.pop("password", None)
     state["active_openvpn_node_id"] = active_openvpn_node_id
@@ -2093,7 +2091,30 @@ def test_node_by_id(node_id: str) -> dict[str, Any]:
         try:
             idx = get_free_test_index()
             use_dev = "null" if not TUN_AVAILABLE else f"tun{idx}"
-            ok, message, _ = run_openvpn_until_ready(str(temp_path), keep_alive=False, route_nopull=True, timeout=12, dev=use_dev)
+            ok, message, proc = run_openvpn_until_ready(str(temp_path), keep_alive=TUN_AVAILABLE, route_nopull=True, timeout=12, dev=use_dev)
+            if ok and TUN_AVAILABLE and proc is not None:
+                time.sleep(5)
+                try:
+                    # Extract tunnel peer IP from the interface
+                    r = subprocess.run(["ip", "addr", "show", use_dev], capture_output=True, text=True, timeout=3)
+                    peer_ip = None
+                    for line in r.stdout.splitlines():
+                        if "inet " in line and "peer" in line:
+                            peer_ip = line.strip().split("peer ")[1].split("/")[0]
+                            break
+                    if peer_ip:
+                        r = subprocess.run(["ping", "-c", "1", "-W", "3", "-I", use_dev, peer_ip], capture_output=True, text=True, timeout=5)
+                        if r.returncode != 0:
+                            ok = False
+                            message = f"Tunnel up but data channel blocked (ping to {peer_ip} failed)"
+                    else:
+                        ok = False
+                        message = f"Could not determine tunnel peer IP for {use_dev}"
+                except Exception as e:
+                    ok = False
+                    message = f"Data plane check error: {e}"
+                finally:
+                    stop_process(proc)
             return ok, message
         finally:
             if idx is not None:
@@ -2230,7 +2251,7 @@ def test_multiple_nodes(node_ids: list[str]) -> list[dict[str, Any]]:
         tun_idx = None
         
         def _try_test(config: str) -> tuple[bool, str]:
-            nonlocal tun_idx, latency
+            nonlocal tun_idx
             try:
                 tun_idx = get_free_test_index()
                 dev_name = "null" if not TUN_AVAILABLE else f"tun{tun_idx}"
@@ -2703,7 +2724,7 @@ def _expire_stale_nodes() -> int:
 
 
 def maintain_valid_nodes(force: bool = False) -> str:
-    global active_openvpn_process, active_openvpn_node_id, is_connecting
+    global is_connecting
     ensure_dirs()
     if not maintenance_lock.acquire(blocking=False):
         msg = "节点维护任务正在运行，请稍后再试"
@@ -5973,7 +5994,7 @@ def check_proxy_health() -> dict[str, Any]:
             connect_host = "::1" if is_ipv6 else "127.0.0.1"
         try:
             s.connect((connect_host, LOCAL_PROXY_PORT))
-        except Exception as e:
+        except Exception:
             if connect_host == "::1":
                 s.close()
                 s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -6125,9 +6146,10 @@ def background_proxy_checker() -> None:
                 if active_openvpn_node_id:
                     _proxy_fail_streak += 1
                     _now_ts = time.time()
+                    _fast_fail = (_tunnel_established_at > 0 and _now_ts - _tunnel_established_at >= 30 and _last_proxy_health_state is not True)
                     _grace_ok = (_tunnel_established_at > 0 and _now_ts - _tunnel_established_at >= 90)
                     _threshold_ok = _proxy_fail_streak >= 3
-                    if _grace_ok and _threshold_ok:
+                    if (_grace_ok and _threshold_ok) or _fast_fail:
                         ui_cfg = load_ui_config()
                         routing_mode = ui_cfg.get("routing_mode", "auto")
                         if routing_mode != "fixed_ip":
@@ -6645,7 +6667,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_bytes(INDEX_HTML.encode("utf-8"), "text/html; charset=utf-8")
         elif effective_path == "/api/nodes":
             try:
-                global last_active_ping_time, last_active_latency, active_openvpn_node_id
+                global last_active_ping_time
                 nodes = read_nodes()
                 active_node = next((n for n in nodes if active_openvpn_node_id and n.get("id") == active_openvpn_node_id), None)
                 for n in nodes:
@@ -7569,7 +7591,6 @@ def main() -> None:
 
     def _reload_env_vars() -> None:
         """Hot-reload: re-read critical env vars at runtime."""
-        nonlocal _shutdown_requested
         # API 速率限制 (v1.7.0)
         new_rate = env_int("API_RATE_LIMIT_PER_MINUTE", 60, 5, 600)
         # Worker 自适应阈值 (v1.9.0)
@@ -7769,7 +7790,7 @@ def main() -> None:
         geo_stats = geoip.get_stats()
         print(f"  GeoIP 数据库:  {geo_stats['records']} 记录", flush=True)
     else:
-        print(f"  GeoIP 数据库:  未加载 (放置 geoip.csv 到数据目录启用)", flush=True)
+        print("  GeoIP 数据库:  未加载 (放置 geoip.csv 到数据目录启用)", flush=True)
     print("=" * 56, flush=True)
     print("", flush=True)
 
@@ -7863,17 +7884,17 @@ if __name__ == "__main__":
             sys.exit(0)
         elif sys.argv[1] in ("--help", "-h"):
             print(f"AimiliVPN v{self_update.VERSION}", flush=True)
-            print(f"", flush=True)
+            print("", flush=True)
             print(f"用法: {sys.argv[0]} [选项]", flush=True)
-            print(f"", flush=True)
-            print(f"选项:", flush=True)
-            print(f"  -V, --version       查看版本信息", flush=True)
-            print(f"  -h, --help          显示此帮助信息", flush=True)
-            print(f"  --show-auth         查看管理凭证 (账号/密码/后台地址)", flush=True)
-            print(f"  --check-update      检查是否有新版本可用", flush=True)
-            print(f"  --update            自动下载并更新到最新版", flush=True)
-            print(f"", flush=True)
-            print(f"无选项时启动服务，数据源: vpngate.net + publicvpnlist.com", flush=True)
+            print("", flush=True)
+            print("选项:", flush=True)
+            print("  -V, --version       查看版本信息", flush=True)
+            print("  -h, --help          显示此帮助信息", flush=True)
+            print("  --show-auth         查看管理凭证 (账号/密码/后台地址)", flush=True)
+            print("  --check-update      检查是否有新版本可用", flush=True)
+            print("  --update            自动下载并更新到最新版", flush=True)
+            print("", flush=True)
+            print("无选项时启动服务，数据源: vpngate.net + publicvpnlist.com", flush=True)
             sys.exit(0)
         else:
             print(f"用法: {sys.argv[0]} [--version | --update | --check-update | --show-auth | --help]")

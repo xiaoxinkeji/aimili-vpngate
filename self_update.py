@@ -145,8 +145,8 @@ def start_update_checker() -> None:
                 info = check_update()
                 if info["latest"]:
                     print(f"[更新] 发现新版本 {info['latest']}，运行 aimilivpn --update 更新", flush=True)
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"[更新] 检查更新时出错: {e}", flush=True)
             time.sleep(CHECK_INTERVAL)
 
     t = threading.Thread(target=_checker, daemon=True)

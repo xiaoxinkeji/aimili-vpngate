@@ -332,13 +332,13 @@ def bandwidth_speed_test(host: str, port: int, size_mb: int = 10, timeout: float
         start = time.time()
         url = f"http://{host}:{port}/api/speedtest?size={size_mb}"
         req = urllib.request.Request(url)
-        resp = urllib.request.urlopen(req, timeout=timeout)
-        total = 0
-        while True:
-            chunk = resp.read(65536)
-            if not chunk:
-                break
-            total += len(chunk)
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            total = 0
+            while True:
+                chunk = resp.read(65536)
+                if not chunk:
+                    break
+                total += len(chunk)
         duration = time.time() - start
         if duration <= 0:
             result["error"] = "timing error"
@@ -372,13 +372,13 @@ def bandwidth_speed_test_over_proxy(proxy_host: str, proxy_port: int, size_mb: i
         for test_url in test_urls:
             try:
                 req = urllib.request.Request(test_url)
-                resp = opener.open(req, timeout=timeout)
-                total = 0
-                while total < size_bytes:
-                    chunk = resp.read(65536)
-                    if not chunk:
-                        break
-                    total += len(chunk)
+                with opener.open(req, timeout=timeout) as resp:
+                    total = 0
+                    while total < size_bytes:
+                        chunk = resp.read(65536)
+                        if not chunk:
+                            break
+                        total += len(chunk)
                 duration = time.time() - start
                 if duration <= 0:
                     result["error"] = "timing error"
@@ -672,7 +672,7 @@ def diagnose_api_failure(api_url: str = "https://www.vpngate.net/api/iphone/") -
         else:
             return 1009, "[ERR_VPS_OUTBOUND_BLOCKED] VPS 完全断网。原因: 任何外部测试连接均失败（IPv4 和 IPv6 均不可达），请检查 VPS 网卡和宿主机连接。"
 
-    return 1010, f"[ERR_API_TLS_INTERFERENCE] HTTPS/TLS 握手被干扰。原因: 可以建立 TCP 连接但请求超时，通常是由于防火墙通过 SNI 阻断了 TLS 握手流。"
+    return 1010, "[ERR_API_TLS_INTERFERENCE] HTTPS/TLS 握手被干扰。原因: 可以建立 TCP 连接但请求超时，通常是由于防火墙通过 SNI 阻断了 TLS 握手流。"
 
 
 def diagnose_openvpn_failure(log_tail: list[str]) -> tuple[int, str]:
@@ -740,7 +740,7 @@ def diagnose_local_obstructions(proxy_port: int = 7928, host: str = "127.0.0.1")
         if not tun_path.exists():
             return 3009, "[ERR_TUN_DEV_NOT_FOUND] 系统中不存在虚拟网卡设备节点 `/dev/net/tun`。原因: 内核未加载 tun 模块，或宿主机禁用了 TUN 设备创建权限。请尝试运行 `modprobe tun` 加载模块，或在 VPS 控制面板中开启 TUN 支持。"
         try:
-            with open(tun_path, "r+b") as f:
+            with open(tun_path, "r+b") as _f:
                 pass
         except PermissionError:
             return 3010, "[ERR_TUN_PERMISSION_DENIED] 无权访问虚拟网卡设备节点 `/dev/net/tun`。原因: 当前用户对该节点没有读写权限。请确保使用 root 权限运行，或者运行 `chmod 666 /dev/net/tun` 赋予读写权限。"

@@ -1,9 +1,9 @@
 #!/bin/bash
 
 # AimiliVPN Docker Entrypoint
-# 功能: 环境预检 -> 网络参数优化 -> 启停信号处理 -> 启动主进程
+# 功能：环境预检 -> 网络参数优化 -> 启停信号处理 -> 启动主进程
 
-set -e
+set -euo pipefail
 
 BOLD="\033[1m"
 GREEN="\033[0;32m"

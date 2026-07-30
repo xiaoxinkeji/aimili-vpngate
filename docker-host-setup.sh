@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
-# AimiliVPN Docker 宿主机一键预检与配置脚本
-# 功能: 检查并加载 TUN 模块、配置内核参数、确保宿主机满足 Docker 运行要求
-set -e
+# AimiliVPN Docker Host Setup - 在宿主机上配置 TUN 转发/NAT
+set -euo pipefail
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'

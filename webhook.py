@@ -37,9 +37,9 @@ def _deliver(url: str, payload: dict[str, Any]) -> bool:
     )
     for attempt in range(1, WEBHOOK_RETRIES + 1):
         try:
-            resp = urllib.request.urlopen(req, timeout=WEBHOOK_TIMEOUT)
-            if 200 <= resp.status < 300:
-                return True
+            with urllib.request.urlopen(req, timeout=WEBHOOK_TIMEOUT) as resp:
+                if 200 <= resp.status < 300:
+                    return True
         except Exception:
             if attempt < WEBHOOK_RETRIES:
                 time.sleep(WEBHOOK_RETRY_DELAY * attempt)
@@ -47,7 +47,6 @@ def _deliver(url: str, payload: dict[str, Any]) -> bool:
 
 
 def _worker() -> None:
-    global WEBHOOK_URLS
     while not _worker_event.is_set():
         item: dict[str, Any] | None = None
         with _queue_lock:

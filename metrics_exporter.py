@@ -63,14 +63,17 @@ def escape_label(val: str) -> str:
 
 def tcp_port_open(host: str, port: int, timeout: float = 1.0) -> bool:
     af = socket.AF_INET6 if ":" in host else socket.AF_INET
+    s = None
     try:
         s = socket.socket(af, socket.SOCK_STREAM)
         s.settimeout(timeout)
         s.connect((host, port))
-        s.close()
         return True
     except Exception:
         return False
+    finally:
+        if s is not None:
+            s.close()
 
 
 def process_running(pattern: str) -> bool:
@@ -190,8 +193,8 @@ def refresh_cache() -> None:
             data["process_cpu_seconds"] = (proc_stat["utime"] + proc_stat["stime"]) / 100.0
             data["process_virtual_memory_bytes"] = proc_stat["vsize"]
             data["process_resident_memory_bytes"] = proc_stat["rss"]
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[metrics] 读取进程资源失败: {e}", flush=True)
 
     # 系统信息
     data["uptime_seconds"] = time.time() - _START_TIME

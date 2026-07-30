@@ -80,8 +80,11 @@ class TaskScheduler:
         self._thread = threading.Thread(target=self._loop, daemon=True, name="task-scheduler")
         self._thread.start()
 
-    def stop(self) -> None:
+    def stop(self, join_timeout: float = 5.0) -> None:
         self._stop_event.set()
+        if self._thread is not None:
+            self._thread.join(timeout=join_timeout)
+            self._thread = None
 
     def status(self) -> dict[str, Any]:
         with self._lock:

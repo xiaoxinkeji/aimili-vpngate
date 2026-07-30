@@ -262,8 +262,8 @@ class UserTrafficAccountant:
                                 "bytes_out": int(v.get("bytes_out", 0)),
                                 "connections": int(v.get("connections", 0)),
                             }
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[计费] 加载流量统计文件失败: {e}", flush=True)
 
     def flush(self) -> None:
         if not self._dirty:
@@ -274,8 +274,8 @@ class UserTrafficAccountant:
                 import json as _json
                 self._file.write_text(_json.dumps(self._users, ensure_ascii=False, indent=2), encoding="utf-8")
                 self._dirty = False
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"[计费] 保存流量统计文件失败: {e}", flush=True)
 
     def add_bytes(self, username: str, in_bytes: int, out_bytes: int) -> None:
         if not username:
@@ -730,9 +730,9 @@ def create_connection(address: tuple[str, int], timeout: float = 20) -> socket.s
         except OSError as e:
             err = e
             if "operation not permitted" in str(e).lower() or e.errno == 1:
-                err = OSError(f"[错误代码 3006] [ERR_PROXY_BIND_TUN_PERM_DENIED] 绑定虚拟网卡 tun0 失败，权限不足！必须以 root 权限运行，或者进程缺少 CAP_NET_RAW 权限。")
+                err = OSError("[错误代码 3006] [ERR_PROXY_BIND_TUN_PERM_DENIED] 绑定虚拟网卡 tun0 失败，权限不足！必须以 root 权限运行，或者进程缺少 CAP_NET_RAW 权限。")
             elif "no such device" in str(e).lower() or e.errno == 19:
-                err = OSError(f"[错误代码 3004] [ERR_ROUTE_DEV_NOT_FOUND] 绑定虚拟网卡 tun0 失败，找不到设备！这通常是因为 OpenVPN 核心未能成功连接或已被异常终止。")
+                err = OSError("[错误代码 3004] [ERR_ROUTE_DEV_NOT_FOUND] 绑定虚拟网卡 tun0 失败，找不到设备！这通常是因为 OpenVPN 核心未能成功连接或已被异常终止。")
             if sock is not None:
                 sock.close()
     if err is not None:
@@ -829,7 +829,7 @@ def socks5_udp_relay(relay_sock: socket.socket, client_addr: tuple[str, int],
         if not data or len(data) < 10:
             continue
 
-        rsv = data[0:2]
+        _rsv = data[0:2]
         frag = data[2]
         atype = data[3]
 

@@ -251,7 +251,8 @@ def _parse_qname(data: bytes, offset: int) -> tuple[str, int]:
             break
         try:
             parts.append(data[offset : offset + length].decode("ascii"))
-        except UnicodeDecodeError:
+        except UnicodeDecodeError as e:
+            print(f"[DNS 转发器] 解析域名标签失败: {e}", flush=True)
             break
         offset += length
 
@@ -417,8 +418,8 @@ def start_dns_forwarder(host: str = DNS_FORWARDER_HOST, port: int = DNS_FORWARDE
         if is_ipv6:
             try:
                 sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
-            except OSError:
-                pass
+            except OSError as e:
+                print(f"[DNS 转发器] 设置 IPV6_V6ONLY 失败: {e}", flush=True)
         sock.bind((host, port))
         print(f"[DNS 转发器] 监听 {host}:{port}，上游服务器: {', '.join(DNS_UPSTREAM_SERVERS)}", flush=True)
         print(f"[DNS 转发器] 缓存大小: {DNS_FORWARDER_CACHE_SIZE} 条，默认 TTL: {DNS_FORWARDER_CACHE_TTL}s", flush=True)

@@ -14,12 +14,17 @@ UI_PORT = int(os.environ.get("UI_PORT", "8787"))
 PROXY_PORT = int(os.environ.get("LOCAL_PROXY_PORT", "7928"))
 PROXY_HOST = os.environ.get("LOCAL_PROXY_HOST", "127.0.0.1")
 
-GREEN = "\033[1;32m"
-RED = "\033[1;31m"
-YELLOW = "\033[1;33m"
-CYAN = "\033[0;36m"
-BOLD = "\033[1m"
-RESET = "\033[0m"
+_USE_COLOR = sys.stdout.isatty() if hasattr(sys.stdout, 'isatty') else False
+
+if _USE_COLOR:
+    GREEN = "\033[1;32m"
+    RED = "\033[1;31m"
+    YELLOW = "\033[1;33m"
+    CYAN = "\033[0;36m"
+    BOLD = "\033[1m"
+    RESET = "\033[0m"
+else:
+    GREEN = RED = YELLOW = CYAN = BOLD = RESET = ""
 
 
 def check_port(host, port, timeout=1.0):
@@ -146,7 +151,7 @@ def main():
     web_url = f"http://localhost:{UI_PORT}/"
     print(f"  Web 管理后台: {web_url}")
     print(f"  代理地址:     http://{PROXY_HOST}:{PROXY_PORT}")
-    print(f"  容器日志:     docker logs -f aimilivpn")
+    print("  容器日志:     docker logs -f aimilivpn")
     print(f"{CYAN}══════════════════════════════════════════════════{RESET}")
 
 
