@@ -563,7 +563,8 @@ docker compose --profile auto-update up -d
 | Version | Feature |
 |---------|---------|
 | v1.49.1 | PyInstaller spec 补充遗漏 data files (dns_forwarder/scheduler/webhook/geoip) |
-| v1.49.0 | 全项目代码质量改进 (资源泄漏/异常处理) — 16 文件 134+, 78-/pyflakes 28→3/Dockerfile 完整性/Shell 严格模式 |
+| v1.49.2 | 代码质量改进续 (DNS 转发器/Metrics/Shell 脚本) |
+| v1.50.0 | 全项目代码质量改进 (资源泄漏/异常处理) — 16 文件 134+, 78-/pyflakes 28→3/Dockerfile 完整性/Shell 严格模式 |
 | v1.49.0 | API Key 认证 — 通过 X-API-Key 请求头访问受保护 API |
 | v1.48.0 | 按用户流量统计 (UserTrafficAccountant) — JSON 持久化/热重载 |
 | v1.47.2 | 修复 ACCESS 日志 path 异常和 alert_rules 空列表不恢复默认规则 |
