@@ -16,10 +16,19 @@
   - 运行时数据（节点数据库 / 最近拉取状态）
   - 返回码 0 表示全部通过，1 表示存在问题
 
+- **Web 管理后台安全加固**：
+  - 管理密码改为 PBKDF2-SHA256 哈希存储（200k 迭代 + 随机盐），
+    `ui_auth.json` 不再保存明文；旧版本明文密码启动时自动迁移，无需手动操作
+  - 会话 token 改用 `secrets.token_urlsafe(32)` 强化熵源
+  - 新增 CSRF 防护：所有已认证的 POST 请求校验 `Origin`/`Referer` 与
+    `Host` 同源，跨站请求返回 403；拒绝 `Origin: null` 边界
+
 ### 修复 (Fixes)
 
 - `vpn_utils.diagnose_api_failure()`: TCP 连通时误报 "TLS 干扰"，现通过真实
   HTTP 请求验证，区分服务正常 / HTTP 异常状态码 / TLS 干扰 / 连接超时
+- `/api/login` 与 `/api/logout` 处理块缺少 `return`，同一请求产生双重响应
+  （200 + 404）并导致 BrokenPipeError 日志污染
 
 ## [v1.50.0] - 2026-07-31
 

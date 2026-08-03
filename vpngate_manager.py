@@ -293,6 +293,42 @@ def generate_random_username() -> str:
             if has_lower and has_upper and has_digit:
                 return uname
 
+_PASSWORD_HASH_ITERATIONS = 200_000
+
+
+def hash_ui_password(pwd: str) -> str:
+    """将管理密码哈希为 PBKDF2-SHA256 格式: pbkdf2$iterations$salt_hex$digest_hex。
+
+    使用随机盐与恒定时间比较，避免 ui_auth.json 泄露明文密码。
+    """
+    salt = os.urandom(16).hex()
+    digest = hashlib.pbkdf2_hmac("sha256", pwd.encode("utf-8"), bytes.fromhex(salt), _PASSWORD_HASH_ITERATIONS).hex()
+    return f"pbkdf2${_PASSWORD_HASH_ITERATIONS}${salt}${digest}"
+
+
+def is_hashed_password(stored: str) -> bool:
+    return isinstance(stored, str) and stored.startswith("pbkdf2$")
+
+
+def verify_ui_password(pwd: str, stored: str) -> bool:
+    """校验明文密码与存储值 (哈希或旧版明文) 是否匹配。"""
+    if not isinstance(pwd, str):
+        return False
+    if is_hashed_password(stored):
+        try:
+            _, iter_text, salt_hex, digest_hex = stored.split("$")
+            iterations = int(iter_text)
+            digest = hashlib.pbkdf2_hmac("sha256", pwd.encode("utf-8"), bytes.fromhex(salt_hex), iterations).hex()
+            return secrets.compare_digest(digest, digest_hex)
+        except (ValueError, TypeError):
+            return False
+    # 兼容旧版明文存储
+    try:
+        return secrets.compare_digest(pwd, stored)
+    except TypeError:
+        return secrets.compare_digest(pwd.encode("utf-8"), str(stored).encode("utf-8"))
+
+
 def validate_required_fields(payload: dict[str, Any], *fields: str) -> list[str]:
     return [f for f in fields if not str(payload.get(f, "")).strip()]
 
@@ -332,7 +368,11 @@ def load_ui_config() -> dict[str, Any]:
             updated = True
             
         if not config.get("password"):
-            config["password"] = generate_random_password()
+            config["password"] = hash_ui_password(generate_random_password())
+            updated = True
+        elif not is_hashed_password(config.get("password")):
+            # 旧版本明文密码自动迁移为 PBKDF2 哈希
+            config["password"] = hash_ui_password(config.get("password"))
             updated = True
 
         normalized_port = bounded_int(config.get("port"), UI_PORT, 1, 65535)
@@ -6351,6 +6391,34 @@ class Handler(BaseHTTPRequestHandler):
             return secrets.compare_digest(auth_header[7:], X_MILI_TOKEN)
         return False
 
+    def _check_csrf_origin(self) -> bool:
+        """校验跨站请求伪造: 已认证请求若携带 Origin/Referer 且与本站不同源则拒绝。
+
+        Cookie 会话认证的浏览器请求必须同源；API Key / Bearer 客户端不带
+        Origin/Referer 头，直接放行。
+        """
+        host = self.headers.get("Host", "")
+        origin = self.headers.get("Origin", "")
+        if origin:
+            if origin == "null":
+                return False
+            try:
+                origin_host = urllib.parse.urlsplit(origin).netloc
+                if origin_host != host:
+                    return False
+            except Exception:
+                return False
+        else:
+            referer = self.headers.get("Referer", "")
+            if referer:
+                try:
+                    ref_host = urllib.parse.urlsplit(referer).netloc
+                    if ref_host and ref_host != host:
+                        return False
+                except Exception:
+                    return False
+        return True
+
     # 标准基础设施探针路径: 不受动态 secret_path 前缀限制，便于 Prometheus/K8s/Docker 等
     # 外部工具直接访问，与 do_GET 中 "无需认证" 的处理逻辑保持一致
     PUBLIC_INFRA_PATHS = ("/health", "/ready", "/metrics", "/api/speedtest")
@@ -6999,8 +7067,8 @@ class Handler(BaseHTTPRequestHandler):
                 expected_pwd = ui_cfg.get("password", "")
                 expected_uname = ui_cfg.get("username", "admin")
                 
-                if expected_pwd and secrets.compare_digest(input_pwd, expected_pwd) and secrets.compare_digest(input_uname, expected_uname):
-                    token = uuid.uuid4().hex
+                if expected_pwd and verify_ui_password(input_pwd, expected_pwd) and secrets.compare_digest(input_uname, expected_uname):
+                    token = secrets.token_urlsafe(32)
                     with lock:
                         active_sessions[token] = time.time() + 30 * 24 * 3600
                     secret_path = self.get_secret_path()
@@ -7012,6 +7080,7 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json({"ok": False, "error": "用户名或密码不正确，请重新输入"}, HTTPStatus.FORBIDDEN)
             except Exception as e:
                 self._handle_post_error(e, "/api/login")
+            return
 
         if effective_path == "/api/logout":
             try:
@@ -7034,9 +7103,15 @@ class Handler(BaseHTTPRequestHandler):
                 })
             except Exception as e:
                 self._handle_post_error(e, "/api/logout")
+            return
 
         if not self.is_authorized():
             self.send_error_json("Unauthorized", "ERR_UNAUTHORIZED", HTTPStatus.UNAUTHORIZED)
+            return
+
+        if not self._check_csrf_origin():
+            print(f"[Security] 拒绝跨站请求伪造 (Origin/Referer 与 Host 不一致): {self.path}", flush=True)
+            self.send_error_json("Forbidden", "ERR_CSRF", HTTPStatus.FORBIDDEN)
             return
 
         if effective_path == "/api/update_credentials":
@@ -7071,7 +7146,7 @@ class Handler(BaseHTTPRequestHandler):
 
                 ui_cfg["username"] = new_username
                 if new_password:
-                    ui_cfg["password"] = new_password
+                    ui_cfg["password"] = hash_ui_password(new_password)
                 ui_cfg["port"] = new_port_int
                 ui_cfg["secret_path"] = new_suffix
                 
