@@ -7576,6 +7576,84 @@ class Tee:
             return self.__dict__.get('file', None)
         return getattr(self.stdout, attr)
 
+def run_doctor() -> int:
+    """运行系统自检诊断 (aimilivpn doctor)。
+
+    综合检查: 本地环境、系统依赖、数据源连接、运行时状态。
+    返回 0 表示所有检查通过，1 表示发现问题。
+    """
+    print("═══ AimiliVPN 系统诊断 ═══", flush=True)
+    print(f"  版本:      {self_update.VERSION} ({self_update.GIT_COMMIT})", flush=True)
+    print(f"  Python:    {sys.version.split()[0]}", flush=True)
+    print(f"  平台:      {sys.platform}", flush=True)
+    print(f"  数据目录:  {DATA_DIR}", flush=True)
+    print(f"  TUN 设备:  {'可用' if TUN_AVAILABLE else '不可用'}", flush=True)
+    print("", flush=True)
+
+    issues = 0
+
+    # 1. 本地环境检查 (端口占用 / TUN 设备 / IP 转发 / 防火墙)
+    print("── 本地环境 ──", flush=True)
+    result = vpn_utils.diagnose_local_obstructions(LOCAL_PROXY_PORT, LOCAL_PROXY_HOST)
+    if result:
+        code, msg = result
+        issues += 1
+        print(f"  [X] [{code}] {msg}", flush=True)
+    else:
+        print(f"  [OK] 端口 {LOCAL_PROXY_PORT} 可用，TUN/转发/防火墙配置正常", flush=True)
+
+    # 2. 系统依赖检查
+    print("── 系统依赖 ──", flush=True)
+    for dep in ("openvpn", "iptables", "ip"):
+        found = ""
+        try:
+            found = subprocess.run(["which", dep], capture_output=True, text=True, timeout=3).stdout.strip()
+        except Exception:
+            found = ""
+        if found:
+            print(f"  [OK] {dep}: {found}", flush=True)
+        else:
+            issues += 1
+            print(f"  [X] {dep}: 未找到，请安装该依赖", flush=True)
+
+    # 3. 数据源连接检查
+    print("── 数据源连接 ──", flush=True)
+    err_code, diag_msg = vpn_utils.diagnose_api_failure(API_URL)
+    if err_code == 0:
+        print(f"  [OK] {API_URL}", flush=True)
+    else:
+        issues += 1
+        print(f"  [X] [{err_code}] {diag_msg}", flush=True)
+
+    # 4. 运行时数据状态
+    print("── 运行时数据 ──", flush=True)
+    try:
+        nodes = read_nodes()
+        valid = [n for n in nodes if n.get("probe_status") == "available"]
+        print(f"  [OK] 节点数据库: {len(nodes)} 个节点，其中 {len(valid)} 个可用", flush=True)
+    except Exception as e:
+        issues += 1
+        print(f"  [X] 读取节点数据库失败: {e}", flush=True)
+
+    try:
+        state = get_state()
+        last_fetch = state.get("last_fetch_status", "not_started")
+        print(f"  [OK] 最近拉取状态: {last_fetch}", flush=True)
+        if last_fetch == "error":
+            issues += 1
+            print(f"       错误信息: {state.get('last_fetch_message', 'N/A')}", flush=True)
+    except Exception as e:
+        issues += 1
+        print(f"  [X] 读取状态文件失败: {e}", flush=True)
+
+    print("", flush=True)
+    if issues:
+        print(f"诊断完成: 发现 {issues} 个问题，请根据上方提示处理", flush=True)
+        return 1
+    print("诊断完成: 所有检查通过", flush=True)
+    return 0
+
+
 def main() -> None:
     ensure_dirs()
 
@@ -7882,6 +7960,8 @@ if __name__ == "__main__":
             print(f"管理密码:      {password if password else '(无密码)'}", flush=True)
             print(f"\n凭证文件位置:  {DATA_DIR / 'CREDENTIALS.txt'}", flush=True)
             sys.exit(0)
+        elif sys.argv[1] in ("--doctor", "-d"):
+            sys.exit(run_doctor())
         elif sys.argv[1] in ("--help", "-h"):
             print(f"AimiliVPN v{self_update.VERSION}", flush=True)
             print("", flush=True)
@@ -7890,6 +7970,7 @@ if __name__ == "__main__":
             print("选项:", flush=True)
             print("  -V, --version       查看版本信息", flush=True)
             print("  -h, --help          显示此帮助信息", flush=True)
+            print("  -d, --doctor        运行系统自检诊断", flush=True)
             print("  --show-auth         查看管理凭证 (账号/密码/后台地址)", flush=True)
             print("  --check-update      检查是否有新版本可用", flush=True)
             print("  --update            自动下载并更新到最新版", flush=True)
@@ -7897,7 +7978,7 @@ if __name__ == "__main__":
             print("无选项时启动服务，数据源: vpngate.net + publicvpnlist.com", flush=True)
             sys.exit(0)
         else:
-            print(f"用法: {sys.argv[0]} [--version | --update | --check-update | --show-auth | --help]")
+            print(f"用法: {sys.argv[0]} [--version | --doctor | --update | --check-update | --show-auth | --help]")
             sys.exit(1)
 
     main()

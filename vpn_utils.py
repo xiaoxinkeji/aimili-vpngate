@@ -672,7 +672,17 @@ def diagnose_api_failure(api_url: str = "https://www.vpngate.net/api/iphone/") -
         else:
             return 1009, "[ERR_VPS_OUTBOUND_BLOCKED] VPS 完全断网。原因: 任何外部测试连接均失败（IPv4 和 IPv6 均不可达），请检查 VPS 网卡和宿主机连接。"
 
-    return 1010, "[ERR_API_TLS_INTERFERENCE] HTTPS/TLS 握手被干扰。原因: 可以建立 TCP 连接但请求超时，通常是由于防火墙通过 SNI 阻断了 TLS 握手流。"
+    # 3.5 TCP 连通后验证真实 HTTP 响应 (区分 TLS 干扰 vs 服务正常)
+    try:
+        probe_req = urllib.request.Request(api_url, headers={"User-Agent": "curl/8.0"})
+        with urllib.request.urlopen(probe_req, timeout=8) as probe_resp:
+            if 200 <= probe_resp.status < 500:
+                return 0, "ok"
+            return 1005, f"[ERR_API_HTTP_ERROR] API 服务器返回异常状态码 {probe_resp.status}。原因: 网络连通但服务端异常，可能是限流或服务故障。"
+    except socket.timeout:
+        return 1010, "[ERR_API_TLS_INTERFERENCE] HTTPS/TLS 握手被干扰。原因: 可以建立 TCP 连接但请求超时，通常是由于防火墙通过 SNI 阻断了 TLS 握手流。"
+    except Exception as e:
+        return 1010, f"[ERR_API_TLS_INTERFERENCE] HTTPS/TLS 握手被干扰。原因: 可以建立 TCP 连接但请求超时。细节: {e}"
 
 
 def diagnose_openvpn_failure(log_tail: list[str]) -> tuple[int, str]:

@@ -5,6 +5,22 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)，
 版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [v1.51.0] - 2026-08-03
+
+### 新增 (Added)
+
+- `aimilivpn doctor` 诊断命令 (`-d`/`--doctor`) — 一键自检：
+  - 本地环境（端口占用 / TUN 设备 / IP 转发 / 防火墙）
+  - 系统依赖（openvpn / iptables / ip 可执行文件）
+  - 数据源连通性（真实 HTTP 探测区分服务正常 vs TLS 干扰）
+  - 运行时数据（节点数据库 / 最近拉取状态）
+  - 返回码 0 表示全部通过，1 表示存在问题
+
+### 修复 (Fixes)
+
+- `vpn_utils.diagnose_api_failure()`: TCP 连通时误报 "TLS 干扰"，现通过真实
+  HTTP 请求验证，区分服务正常 / HTTP 异常状态码 / TLS 干扰 / 连接超时
+
 ## [v1.50.0] - 2026-07-31
 
 ### 全项目代码质量改进
@@ -100,4 +116,4 @@
 2. **安全加固** — Web UI 会话加密存储、API CSRF 防护、TLS 指纹混淆
 3. **可观测性提升** — `/api/debug` 端点、request_id 追踪、Prometheus 节点维度
 4. **性能优化** — 节点测试并发自适应、代理中继零拷贝、缓存预加载
-5. **运维改进** — `aimilivpn doctor` 诊断命令、配置热重载扩展、自动备份轮转
+5. **运维改进** — `aimilivpn doctor` 诊断命令 ✅、配置热重载扩展、自动备份轮转
