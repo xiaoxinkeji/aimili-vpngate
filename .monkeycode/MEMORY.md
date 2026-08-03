@@ -135,3 +135,13 @@
   - pyflakes 清理: `vpngate_manager.py` 移除未使用的 `import select`、修复 `except Exception as e` 中 `e` 未使用
   - pyflakes 清理: 移除 `docker-stats.py`、`proxy_server.py`、`vpn_utils.py`、`vpngate_manager.py` 中的空 f-string 前缀
   - pyflakes 清理：移除 `vpngate_manager.py` 未使用的 `global`/`nonlocal` 声明 (5 处)，剩余 3 个 pyflakes 问题均为误报/有意为之
+
+### v1.51 安全加固 + 环境已知事项 (2026-08-03)
+- Date: 2026-08-03
+- Context: Agent 实现 aimilivpn doctor + Web 后台安全加固时发现
+- Category: 环境配置
+- Instructions:
+  - 本地有遗留测试实例 (PID 25214) 常驻占用端口 18787/17928，测试新实例需换用其他端口 (如 28787)
+  - `ui_auth.json` 密码已改为 PBKDF2 哈希 (`pbkdf2$iter$salt$digest`)，明文自动迁移；后续读取请勿假设明文
+  - Web 后台已认证 POST 请求需同源 Origin/Referer，跨站返回 403 (CSRF)；API 客户端不带 Origin 头即可放行
+  - 新增 CLI 命令 `-d`/`--doctor`，帮助信息/用法字符串需同步维护
