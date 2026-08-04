@@ -6021,6 +6021,101 @@ function exportLogContent() {
 </script>
 </body></html>"""
 
+def build_debug_info() -> dict[str, Any]:
+    """构建运行时调试信息快照 (/api/debug)。
+
+    仅使用本地快速数据，不发起网络请求，便于故障排查与监控。
+    """
+    proc_start = get_state().get("process_started_at", 0) or server_start_time
+    uptime = max(0.0, time.time() - proc_start) if proc_start else 0.0
+
+    rss_bytes = 0
+    try:
+        with open(f"/proc/{os.getpid()}/status", encoding="utf-8") as fh:
+            for line in fh:
+                if line.startswith("VmRSS:"):
+                    rss_bytes = int(line.split()[1]) * 1024
+                    break
+    except Exception:
+        pass
+
+    nodes = []
+    available = 0
+    try:
+        nodes = read_nodes()
+        available = sum(1 for n in nodes if n.get("probe_status") == "available")
+    except Exception:
+        pass
+
+    try:
+        sess_stats = proxy_server._sessions.stats()
+    except Exception:
+        sess_stats = {}
+
+    try:
+        keys = load_api_keys()
+        api_key_total = len(keys)
+        api_key_active = sum(1 for k in keys if k.get("enabled", True))
+    except Exception:
+        api_key_total = api_key_active = 0
+
+    try:
+        scheduler_status = task_scheduler.status()
+    except Exception:
+        scheduler_status = {}
+
+    try:
+        webhook_status = webhook.get_webhook_status()
+    except Exception:
+        webhook_status = {}
+
+    try:
+        loadavg = os.getloadavg()
+    except Exception:
+        loadavg = (0.0, 0.0, 0.0)
+
+    try:
+        dns_cache_stats = dns_forwarder.get_dns_stats()
+    except Exception:
+        dns_cache_stats = {}
+
+    state = get_state()
+    safe_state = {k: v for k, v in state.items() if k not in ("password", "api_keys")}
+
+    return {
+        "version": self_update.VERSION,
+        "git_commit": self_update.GIT_COMMIT,
+        "python": sys.version.split()[0],
+        "platform": sys.platform,
+        "process": {
+            "pid": os.getpid(),
+            "uptime_sec": round(uptime, 1),
+            "threads": threading.active_count(),
+            "rss_bytes": rss_bytes,
+            "rss_mb": round(rss_bytes / 1024 / 1024, 1) if rss_bytes else 0,
+        },
+        "system": {
+            "loadavg_1_5_15": [round(x, 2) for x in loadavg],
+            "cpu_count": os.cpu_count() or 0,
+        },
+        "tun_available": TUN_AVAILABLE,
+        "ports": {
+            "ui": (UI_HOST, UI_PORT),
+            "proxy": (LOCAL_PROXY_HOST, LOCAL_PROXY_PORT),
+        },
+        "nodes": {
+            "total": len(nodes),
+            "available": available,
+        },
+        "sessions": sess_stats,
+        "api_keys": {"total": api_key_total, "active": api_key_active},
+        "scheduler": scheduler_status,
+        "webhook": webhook_status,
+        "dns_cache": dns_cache_stats,
+        "state": safe_state,
+    }
+
+
 def check_proxy_health() -> dict[str, Any]:
     # 1. 检测代理服务端口是否在监听
     is_ipv6 = ":" in LOCAL_PROXY_HOST
@@ -6812,6 +6907,8 @@ class Handler(BaseHTTPRequestHandler):
                 "latest": info.get("latest"),
                 "update_url": info.get("url"),
             })
+        elif effective_path == "/api/debug":
+            self.send_json(build_debug_info())
         elif effective_path == "/api/gateway_status":
             try:
                 web_ui_status = {

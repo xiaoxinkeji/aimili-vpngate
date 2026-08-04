@@ -23,6 +23,12 @@
   - 新增 CSRF 防护：所有已认证的 POST 请求校验 `Origin`/`Referer` 与
     `Host` 同源，跨站请求返回 403；拒绝 `Origin: null` 边界
 
+- **可观测性提升**：
+  - 新增受保护的 `/api/debug` 调试端点，一次返回运行时快照：
+    版本/进程 (PID/uptime/线程/RSS 内存)、系统负载、TUN 状态、
+    端口监听、节点/会话/API Key 统计、scheduler/webhook/DNS 缓存状态、
+    运行时 state（自动剔除 password 等敏感字段）
+
 ### 修复 (Fixes)
 
 - `vpn_utils.diagnose_api_failure()`: TCP 连通时误报 "TLS 干扰"，现通过真实
@@ -123,6 +129,6 @@
 
 1. **IPv6 支持增强** — 代理/DNS 完整 IPv6 地址族支持
 2. **安全加固** — Web UI 会话加密存储、API CSRF 防护、TLS 指纹混淆
-3. **可观测性提升** — `/api/debug` 端点、request_id 追踪、Prometheus 节点维度
+3. **可观测性提升** — `/api/debug` 端点 ✅、request_id 追踪 ✅、Prometheus 节点维度
 4. **性能优化** — 节点测试并发自适应、代理中继零拷贝、缓存预加载
 5. **运维改进** — `aimilivpn doctor` 诊断命令 ✅、配置热重载扩展、自动备份轮转
