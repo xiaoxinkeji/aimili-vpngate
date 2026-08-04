@@ -28,6 +28,8 @@
     版本/进程 (PID/uptime/线程/RSS 内存)、系统负载、TUN 状态、
     端口监听、节点/会话/API Key 统计、scheduler/webhook/DNS 缓存状态、
     运行时 state（自动剔除 password 等敏感字段）
+  - Prometheus 新增 `aimilivpn_nodes_by_country` 指标（按国家聚合节点数），
+    补全按 status/type/country 的节点维度观测
 
 ### 修复 (Fixes)
 
@@ -129,6 +131,6 @@
 
 1. **IPv6 支持增强** — 代理/DNS 完整 IPv6 地址族支持
 2. **安全加固** — Web UI 会话加密存储、API CSRF 防护、TLS 指纹混淆
-3. **可观测性提升** — `/api/debug` 端点 ✅、request_id 追踪 ✅、Prometheus 节点维度
+3. **可观测性提升** — `/api/debug` 端点 ✅、request_id 追踪 ✅、Prometheus 节点维度 ✅
 4. **性能优化** — 节点测试并发自适应、代理中继零拷贝、缓存预加载
 5. **运维改进** — `aimilivpn doctor` 诊断命令 ✅、配置热重载扩展、自动备份轮转

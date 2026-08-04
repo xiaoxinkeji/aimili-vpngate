@@ -289,6 +289,12 @@ def generate_metrics() -> str:
         lines.append(f'aimilivpn_nodes_by_type{{type="{escape_label(ip_type)}"}} {count}')
     lines.append("")
 
+    lines.append("# HELP aimilivpn_nodes_by_country Number of nodes grouped by country")
+    lines.append("# TYPE aimilivpn_nodes_by_country gauge")
+    for country, count in d.get("node_count_by_country", {}).items():
+        lines.append(f'aimilivpn_nodes_by_country{{country="{escape_label(country)}"}} {count}')
+    lines.append("")
+
     lines.append("# HELP aimilivpn_blacklisted_nodes Number of blacklisted nodes")
     lines.append("# TYPE aimilivpn_blacklisted_nodes gauge")
     lines.append(f"aimilivpn_blacklisted_nodes {d.get('blacklisted_nodes', 0)}")
